@@ -1,7 +1,7 @@
 {
   "name": "dsh-mdvault",
   "description": "Workspace document vault for the dsh web GUI: a conversation '文档' tab with an all-type file tree (Markdown/PDF/HTML/code/Excel·CSV/images), full GFM rendering via the platform MarkdownText (tables, task lists, footnotes, KaTeX math, highlighted code fences), Mermaid diagrams, Obsidian-style [[wikilinks]], PDF blob preview, image zoom/pan, native SheetJS spreadsheets, and in-page editing with find/replace. Optional dsh-better-sidebar viewer integration.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -13,11 +13,12 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node test/helpers.test.mjs && node test/host.test.mjs",
+    "test": "node test/helpers.test.mjs && node test/host.test.mjs && node test/render.test.mjs",
     "test:helpers": "node test/helpers.test.mjs",
     "test:host": "node test/host.test.mjs",
     "probe:graph": "node test/probe-graph.mjs",
-    "verify:served": "node test/verify-served.mjs"
+    "verify:served": "node test/verify-served.mjs",
+    "test:render": "node test/render.test.mjs"
   },
   "dsh": {
     "bundle": {

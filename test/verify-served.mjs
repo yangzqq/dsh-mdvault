@@ -93,8 +93,18 @@ console.log('served    = ' + served.body.length + ' bytes')
 console.log('on disk   = ' + onDisk.length + ' bytes')
 console.log('')
 
+// Read the expected build id from the source itself, so bumping the version
+// can never leave this probe asserting a stale string.
+const versionMatch = /const MDVAULT_VERSION = '([^']+)'/.exec(onDisk)
+if (versionMatch === null) {
+	console.error('could not find MDVAULT_VERSION in lib/client.js')
+	process.exit(1)
+}
+const version = versionMatch[1]
+const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
+
 const probes = [
-	['build id 1.2.0', "'1.2.0'"],
+	['build id matches the source', "'" + version + "'"],
 	['declared inject', 'exports.inject'],
 	['document-level interceptor', 'onDocumentClick'],
 	['capture-phase registration', "addEventListener('click', onDocumentClick, true)"],
@@ -103,6 +113,7 @@ const probes = [
 	['nav root marker', "'data-mdv-root'"],
 	['default-collapsed tree', 'isDirOpen'],
 	['collapse-all control', '折叠'],
+	['composer hiding', 'data-mdvault-hide-composer'],
 	['mermaid SVG sanitizer', 'sanitizeSvg'],
 	['code size tiers', 'HIGHLIGHT_MAX'],
 ]
@@ -111,6 +122,15 @@ for (const [label, needle] of probes) {
 	const ok = served.body.includes(needle)
 	if (!ok) bad += 1
 	console.log((ok ? '  ok   ' : '  MISS ') + label)
+}
+
+// The toolbar shows the in-source build id, so package.json must agree or the
+// two would silently disagree.
+const versionAgrees = pkg.version === version
+console.log((versionAgrees ? '  ok   ' : '  MISS ') + 'package.json version === build id (' + version + ')')
+if (!versionAgrees) {
+	bad += 1
+	console.log('        package.json says ' + pkg.version)
 }
 
 // The combo route serves the module source verbatim, followed only by a
@@ -130,7 +150,7 @@ if (!(contains && onlySourceMapTrailer)) {
 
 console.log('')
 if (bad === 0) {
-	console.log('OK — the browser will receive the current build (v1.2.0).')
+	console.log('OK — the browser will receive the current build (v' + version + ').')
 	console.log('If the tab still shows old behavior, the page itself is stale: hard-refresh it.')
 } else {
 	console.log(bad + ' check(s) failed.')
