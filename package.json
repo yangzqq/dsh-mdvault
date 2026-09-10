@@ -16,7 +16,7 @@
     "test": "node test/helpers.test.mjs && node test/host.test.mjs",
     "test:helpers": "node test/helpers.test.mjs",
     "test:host": "node test/host.test.mjs",
-    "probe:hmr": "node test/probe-hmr.mjs"
+    "probe:graph": "node test/probe-graph.mjs"
   },
   "dsh": {
     "bundle": {

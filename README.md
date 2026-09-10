@@ -115,7 +115,7 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 npm test              # 纯函数 + 宿主路由，共 72 项断言
 npm run test:helpers  # 链接改写、frontmatter、路径解析、mermaid 检测、SVG 清洗、apply()
 npm run test:host     # 宿主路由：路径越界、Content-Type、ETag/304、表格页
-npm run probe:hmr     # 诊断：确认本插件是否已被 DSH 作为客户端模块加载
+npm run probe:graph   # 诊断：确认 DSH 是否已把本插件加载为客户端模块，且浏览器拿到的是最新代码
 ```
 
 测试直接加载 `lib/` 下**发布用的真实代码**（通过模拟 `window.__ModuleLoader__` 与 Cordis `ctx`），不是副本。
