@@ -10,7 +10,8 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "scripts": {
     "test": "node test/helpers.test.mjs && node test/host.test.mjs && node test/render.test.mjs",
@@ -21,6 +22,9 @@
     "test:render": "node test/render.test.mjs"
   },
   "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.1"
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -33,14 +37,25 @@
       ]
     }
   },
-  "peerDependencies": {
-    "react": "^18.2.0"
-  },
+  "peerDependencies": {},
   "files": [
     "lib",
     "dist",
+    "test",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-web",
+    "markdown",
+    "obsidian",
+    "wikilinks",
+    "mermaid",
+    "pdf",
+    "document-viewer"
   ],
   "license": "MIT"
 }

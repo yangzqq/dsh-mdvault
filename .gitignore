@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+
+# Packaging artifacts (`npm pack`). The tarball is a build output, and the
+# cache dir exists only so `npm pack` works when the default npm cache is not
+# writable.
+*.tgz
+.npm-cache/

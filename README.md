@@ -107,7 +107,7 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 - **无构建步骤**：`lib/` 是可直接运行的纯 JavaScript
 - **无 npm 依赖**：SheetJS 与 Mermaid 已打包在 `dist/`，不需要外网
 
-## 安装（本地目录方式）
+## 安装方式一：本地目录（最快，但不进插件管理列表）
 
 1. 把整个 `dsh-mdvault` 文件夹复制到目标机器的：
 
@@ -128,6 +128,82 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 3. 重启 `dsh web`。聊天区顶部出现"📄 文档"标签页即成功。
 
 > **注意**：`lib/client.js`（浏览器半边）的改动会被 DSH 自带的 HMR 监听并热重载；但 `lib/index.js`（宿主半边）的改动**不会**热重载，修改宿主代码后需要重启 `dsh web`。
+
+这种方式**不会**出现在「设置 → 插件管理」列表里，因为该列表只枚举 profile `package.json` 的 `dependencies`。想要能统一管理，用下面的打包安装方式。
+
+## 安装方式二：打包成 tgz（推荐，可进插件管理列表）
+
+插件管理列表（`@linxin666/dsh-client-ui-plugin-manager`）的枚举规则是：
+
+```
+for (const name of Object.keys(manifest.dependencies).sort()) → 一行
+```
+
+即**只列 profile `package.json` 的 `dependencies`**，然后逐行读取
+`node_modules/<name>/package.json` 拿版本、读 `node_modules/<name>/cordis.patch.yml`
+拿它声明的挂载行。所以要让插件出现在列表里，它必须是一个**被声明的依赖**。
+
+### 打包
+
+```bash
+npm pack                 # 产出 dsh-mdvault-<version>.tgz
+```
+
+> 若 npm 默认缓存在当前环境不可写（沙箱 / 权限），改用工作区内的缓存：
+> `npm pack --cache ./.npm-cache`
+
+产物约 1.3 MB（解包约 4.7 MB），含 `lib/`、`dist/`（SheetJS + Mermaid）、
+`test/`、`cordis.patch.yml`、`README.md`、`LICENSE`。
+
+### 安装
+
+把 tgz 放到一个固定位置（例如 `~/.agents/`），然后：
+
+```bash
+dsh plugin --profile web add file:C:/Users/<你>/.agents/dsh-mdvault-1.2.1.tgz
+```
+
+或手工两步：
+
+1. 在 profile `package.json` 中登记依赖与 bundle：
+
+   ```json
+   {
+     "dsh": { "profile": { "bundles": [ "...", "dsh-mdvault" ] } },
+     "dependencies": {
+       "dsh-mdvault": "file:C:/Users/<你>/.agents/dsh-mdvault-1.2.1.tgz"
+     }
+   }
+   ```
+
+2. ⚠️ **同时删掉 `cordis.patch.yml` 里手工加的那段 `- insert: - id: mdvault`**。
+
+   因为 `dsh-mdvault` 一旦成为 bundles 条目，它自己包内的 `cordis.patch.yml`
+   就会作为 bundle 层被套用（里面已经写了同样的 insert 行）。两处都写就是
+   **同一个 id 被挂载两次**，属于重复挂载。
+
+3. 安装依赖并重启：
+
+   ```bash
+   cd ~/.dsh/profiles/web && pnpm install
+   # 然后重启 dsh web
+   ```
+
+### 为什么 tgz 里带 `test/`
+
+`files` 里包含了 `test/`，所以安装后仍可自检：
+
+```bash
+cd ~/.dsh/profiles/web/node_modules/dsh-mdvault && npm test   # 134 项断言
+```
+
+## 卸载
+
+- **tgz 方式**：`dsh plugin --profile web remove dsh-mdvault`（或从 profile
+  `package.json` 移除该依赖与 bundles 条目），再 `pnpm install`。
+- **本地目录方式**：从 `cordis.patch.yml` 删除对应 `- insert:` 块，并删除
+  `node_modules/dsh-mdvault` 目录，重启即可。
+
 
 ## 插件注册的 HTTP 路由
 
@@ -183,10 +259,6 @@ npm run verify:served # 诊断：服务端发出的字节 = 磁盘现状，且�
 
 `test:render` 值得一提：它自带一个精简版 React 实现（`createElement`、按位置索引的 hooks、能把 Promise 状态更新收敛到稳定的重渲染循环），会**真正执行组件函数**。纯函数测试永远抓不到渲染期异常——v1.2.0 因此把一个「`const` 在声明前被读取」的错误发了出去，导致整个标签页白屏。该测试已用旧版本反向验证过：把 bug 放回去，它会立刻报错。
 
-## 卸载
-
-从 profile 的 `cordis.patch.yml` 删除对应 `- insert:` 块，并删除 `node_modules/dsh-mdvault` 目录，重启即可。
-
 ## 许可
 
-MIT
+MIT（`dist/` 内打包的第三方库许可见 `LICENSE`）
