@@ -192,6 +192,25 @@ await test('an unknown method returns 404 with a JSON body', async () => {
 	assert.equal(json(res).ok, false)
 })
 
+await test('lists files nested far deeper than the old 6-level limit', async () => {
+	// The original walk stopped at depth 6, so deep documents fell out of the
+	// listing — which also broke relative links to them.
+	const deepDir = join(ROOT, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i')
+	await mkdir(deepDir, { recursive: true })
+	await writeFile(join(deepDir, 'deepnote.md'), '# deep\n', 'utf8')
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({}) })
+	const paths = json(res).files.map((f) => f.path)
+	assert.ok(paths.includes('a/b/c/d/e/f/g/h/i/deepnote.md'), 'deep file missing from: ' + paths.join(','))
+})
+
+await test('reports the truncation flag and the depth limit', async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({}) })
+	const out = json(res)
+	assert.equal(typeof out.truncated, 'boolean')
+	assert.equal(typeof out.maxDepth, 'number')
+	assert.ok(out.maxDepth >= 10, 'the depth limit should allow real document trees')
+})
+
 console.log('/mdvault/api read + write')
 
 await test('reads a text file', async () => {

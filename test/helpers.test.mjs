@@ -87,7 +87,7 @@ function test(name, fn) {
 	}
 }
 
-const { rewriteInternalLinks, stripFrontmatter, toRelPath, fenceFor, langForPath, isTextDoc, decodeTarget, hasMermaidFence, sanitizeSvg, isStrippedSvgElement, isStrippedSvgAttr, WIKI_PREFIX } = pure
+const { rewriteInternalLinks, stripFrontmatter, toRelPath, fenceFor, langForPath, isTextDoc, decodeTarget, hasMermaidFence, sanitizeSvg, isStrippedSvgElement, isStrippedSvgAttr, resolveRelPath, resolveOpenTarget, findByPathIn, formatBytes, isDirOpen, WIKI_PREFIX, REL_PREFIX } = pure
 
 console.log('rewriteInternalLinks')
 
@@ -109,9 +109,19 @@ test('wikilink with a #page fragment keeps the fragment in the target', () => {
 	assert.equal(decodeTarget(encoded), '手册.pdf#page=17')
 })
 
-test('relative markdown link is rewritten', () => {
+test('relative markdown link is rewritten to the document-relative prefix', () => {
 	const out = rewriteInternalLinks('[other](./sub/other.md)')
-	assert.ok(out.includes(WIKI_PREFIX + encodeURIComponent('./sub/other.md')), out)
+	assert.ok(out.includes(REL_PREFIX + encodeURIComponent('./sub/other.md')), out)
+})
+
+test('a wikilink and a relative link get different prefixes', () => {
+	// The path segment records which resolution rule applies: [[x]] is
+	// vault-root-relative in Obsidian, [x](./y.md) is document-relative.
+	const wiki = rewriteInternalLinks('[[note]]')
+	const rel = rewriteInternalLinks('[note](./note.md)')
+	assert.ok(wiki.includes(WIKI_PREFIX), wiki)
+	assert.ok(rel.includes(REL_PREFIX), rel)
+	assert.ok(!rel.includes(WIKI_PREFIX), rel)
 })
 
 test('remote http(s) links are left alone', () => {
@@ -158,7 +168,7 @@ test('a label containing parentheses cannot break out of the produced link', () 
 
 test('a target containing parentheses stays percent-encoded in the URL', () => {
 	const out = rewriteInternalLinks('[x](./a(1).md)')
-	const encoded = out.slice(out.indexOf(WIKI_PREFIX) + WIKI_PREFIX.length, out.indexOf(')'))
+	const encoded = out.slice(out.indexOf(REL_PREFIX) + REL_PREFIX.length, out.indexOf(')'))
 	assert.equal(decodeTarget(encoded), './a(1).md')
 	assert.ok(!/[()]/.test(encoded), out)
 })
@@ -468,6 +478,206 @@ await test('the better-sidebar integration mounts when the service is present', 
 	assert.deepEqual([...viewers[0].exts], ['md', 'markdown'])
 	assert.equal(tabs.length, 1)
 	assert.equal(tabs[0].id, 'mdvault-pdf')
+})
+
+console.log('resolveOpenTarget — the link-opening rules')
+
+// A listing deliberately NOT containing the linked files, reproducing the
+// condition that broke links: the target is outside the tree listing.
+const listing = [{ path: 'notes/readme.md', name: 'readme.md' }]
+const doc = 'projects/alpha/report.md'
+
+await test('a pdf linked from a document resolves beside that document', () => {
+	// '../' pops the document's own directory: the base is projects/alpha, so
+	// the result is projects/assets/manual.pdf — but crucially it is resolved
+	// FROM the document, not from the workspace root.
+	const out = resolveOpenTarget('../assets/manual.pdf', doc, 'rel', listing)
+	assert.equal(out.kind, 'pdf')
+	assert.equal(out.rel, 'projects/assets/manual.pdf')
+})
+
+await test('regression: a deep link no longer resolves to the workspace root', () => {
+	// The original bug resolved './x.pdf' as root-relative when the tree
+	// listing missed, producing 'x.pdf' instead of 'projects/alpha/x.pdf'.
+	const out = resolveOpenTarget('./x.pdf', 'projects/alpha/report.md', 'rel', [
+		{ path: 'unrelated.md', name: 'unrelated.md' },
+	])
+	assert.equal(out.rel, 'projects/alpha/x.pdf')
+	assert.notEqual(out.rel, 'x.pdf')
+})
+
+await test('a png linked from a document resolves beside that document', () => {
+	const out = resolveOpenTarget('./img/diagram.png', doc, 'rel', listing)
+	assert.equal(out.kind, 'image')
+	assert.equal(out.rel, 'projects/alpha/img/diagram.png')
+})
+
+await test('a bare sibling filename resolves beside the document', () => {
+	const out = resolveOpenTarget('figure.png', doc, 'rel', listing)
+	assert.equal(out.rel, 'projects/alpha/figure.png')
+})
+
+await test('resolution does not require the file to be in the listing', () => {
+	// The old code consulted the tree first; a miss changed the base directory.
+	const out = resolveOpenTarget('./deep/hidden/thing.pdf', doc, 'rel', [])
+	assert.equal(out.rel, 'projects/alpha/deep/hidden/thing.pdf')
+})
+
+await test('a leading slash is still workspace-root absolute', () => {
+	const out = resolveOpenTarget('/shared/manual.pdf', doc, 'rel', listing)
+	assert.equal(out.rel, 'shared/manual.pdf')
+})
+
+await test('a pdf page fragment is preserved', () => {
+	const out = resolveOpenTarget('./manual.pdf#page=17', doc, 'rel', listing)
+	assert.equal(out.kind, 'pdf')
+	assert.equal(out.rel, 'projects/alpha/manual.pdf')
+	assert.equal(out.frag, 'page=17')
+})
+
+await test('each extension maps to its viewer kind', () => {
+	const cases = [
+		['a.png', 'image'], ['a.jpg', 'image'], ['a.svg', 'image'],
+		['a.pdf', 'pdf'], ['a.csv', 'sheet'], ['a.xlsx', 'sheet'],
+		['a.html', 'html'], ['a.py', 'text'], ['a.json', 'text'],
+		['a.md', 'note'], ['a.markdown', 'note'],
+	]
+	for (const [name, kind] of cases) {
+		const out = resolveOpenTarget(name, doc, 'rel', listing)
+		assert.equal(out.kind, kind, name)
+	}
+})
+
+await test('an exotic extension falls back to download', () => {
+	const out = resolveOpenTarget('./archive.zip', doc, 'rel', listing)
+	assert.equal(out.kind, 'file')
+})
+
+await test('a relative markdown link resolves beside the document', () => {
+	const out = resolveOpenTarget('./sibling.md', doc, 'rel', listing)
+	assert.equal(out.kind, 'note')
+	assert.equal(out.rel, 'projects/alpha/sibling.md')
+})
+
+await test('a wikilink resolves from the vault root', () => {
+	const list = [{ path: 'notes/idea.md', name: 'idea.md' }]
+	const out = resolveOpenTarget('notes/idea', doc, 'wiki', list)
+	assert.equal(out.kind, 'note')
+	assert.equal(out.rel, 'notes/idea.md')
+})
+
+await test('a bare wikilink falls back to a basename match anywhere', () => {
+	const list = [{ path: 'deep/nested/target.md', name: 'target.md' }]
+	const out = resolveOpenTarget('target', doc, 'wiki', list)
+	assert.equal(out.kind, 'note')
+	assert.equal(out.rel, 'deep/nested/target.md')
+})
+
+await test('a relative markdown link wins over a basename scan', () => {
+	const list = [
+		{ path: 'elsewhere/sibling.md', name: 'sibling.md' },
+		{ path: 'projects/alpha/sibling.md', name: 'sibling.md' },
+	]
+	const out = resolveOpenTarget('./sibling.md', doc, 'rel', list)
+	assert.equal(out.rel, 'projects/alpha/sibling.md')
+})
+
+await test('an extension-less non-note stays a text file', () => {
+	const out = resolveOpenTarget('./Dockerfile', doc, 'rel', [])
+	assert.equal(out.kind, 'text')
+})
+
+await test('escaping the workspace root is clamped, never escaped', () => {
+	const out = resolveOpenTarget('../../../../../../etc/passwd', doc, 'rel', [])
+	assert.equal(out.rel, 'etc/passwd')
+	assert.ok(!out.rel.includes('..'))
+})
+
+await test('a dot-prefixed segment is refused', () => {
+	assert.equal(resolveOpenTarget('./.git/config', doc, 'rel', []), null)
+})
+
+await test('an empty or fragment-only target is refused', () => {
+	assert.equal(resolveOpenTarget('', doc, 'rel', []), null)
+	assert.equal(resolveOpenTarget('#section', doc, 'rel', []), null)
+	assert.equal(resolveOpenTarget(null, doc, 'rel', []), null)
+})
+
+console.log('resolveRelPath')
+
+await test('a relative path joins the base directory', () => {
+	assert.equal(resolveRelPath('a/b.png', 'x/y'), 'x/y/a/b.png')
+})
+
+await test('a leading slash ignores the base', () => {
+	assert.equal(resolveRelPath('/a/b.png', 'x/y'), 'a/b.png')
+})
+
+await test('parent segments pop and clamp at the root', () => {
+	assert.equal(resolveRelPath('../a.png', 'x/y'), 'x/a.png')
+	assert.equal(resolveRelPath('../../a.png', 'x'), 'a.png')
+	assert.equal(resolveRelPath('../../../a.png', ''), 'a.png')
+})
+
+await test('query and fragment are stripped', () => {
+	assert.equal(resolveRelPath('a.png?v=1#x', ''), 'a.png')
+})
+
+console.log('findByPathIn / formatBytes')
+
+await test('exact path match wins, then extension-less and family aliases', () => {
+	const list = [{ path: 'a/b.md', name: 'b.md' }]
+	assert.equal(findByPathIn(list, 'a/b.md').path, 'a/b.md', 'exact')
+	assert.equal(findByPathIn(list, 'a/b').path, 'a/b.md', 'extension-less appends .md')
+	assert.equal(findByPathIn(list, 'a/b.markdown').path, 'a/b.md', 'markdown family swaps')
+	assert.equal(findByPathIn(list, 'a/b.mdx').path, 'a/b.md', 'mdx is the same family')
+	assert.equal(findByPathIn(list, 'nope'), null)
+})
+
+await test('a non-markdown request never matches a markdown file', () => {
+	const list = [{ path: 'a/b.md', name: 'b.md' }]
+	assert.equal(findByPathIn(list, 'a/b.png'), null)
+	assert.equal(findByPathIn(list, 'a/b.md.bak'), null)
+})
+
+await test('byte sizes format readably', () => {
+	assert.equal(formatBytes(512), '512 B')
+	assert.equal(formatBytes(2048), '2.0 KB')
+	assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB')
+})
+
+console.log('isDirOpen — the tree expansion rule')
+
+await test('directories are collapsed by default', () => {
+	// The old rule (`!collapsed[path]`) opened EVERY directory on first paint,
+	// rendering one DOM row per file in the workspace.
+	assert.equal(isDirOpen('docs', {}, ''), false)
+	assert.equal(isDirOpen('docs', {}, null), false)
+})
+
+await test('the ancestors of the selected file open so it is visible', () => {
+	const sel = 'docs/2026/alpha/report.md'
+	assert.equal(isDirOpen('docs', {}, sel), true)
+	assert.equal(isDirOpen('docs/2026', {}, sel), true)
+	assert.equal(isDirOpen('docs/2026/alpha', {}, sel), true)
+	assert.equal(isDirOpen('other', {}, sel), false)
+	assert.equal(isDirOpen('docs/2025', {}, sel), false)
+})
+
+await test('a directory that merely shares a prefix is not opened', () => {
+	// 'doc' must not match 'docs/...' — the check is on a path boundary.
+	assert.equal(isDirOpen('doc', {}, 'docs/a.md'), false)
+})
+
+await test('an explicit toggle always wins over the selection default', () => {
+	const sel = 'docs/a.md'
+	assert.equal(isDirOpen('docs', { docs: false }, sel), false, 'manual collapse is respected')
+	assert.equal(isDirOpen('unrelated', { unrelated: true }, sel), true, 'manual expand is respected')
+})
+
+await test('a file directly in the workspace root opens no directory', () => {
+	assert.equal(isDirOpen('docs', {}, 'readme.md'), false)
+	assert.equal(isDirOpen('docs', {}, 'docs.md'), false)
 })
 
 console.log('')

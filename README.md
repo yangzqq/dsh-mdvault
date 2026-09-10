@@ -9,8 +9,10 @@ DSH Web UI 的工作区文档库插件：在会话区新增一个 **📄 文档*
 ### 文件树
 
 - **全类型文件树**：Markdown / PDF / HTML / 代码 / 表格 / 图片，点击即用对应方式预览
+- **默认折叠**：只展开当前文档所在的那条路径，避免一次性渲染整个工作区（这是之前卡顿的主因之一）
 - **筛选框**：输入关键字即时过滤文件路径，匹配时自动展开目录
 - **分类图标**：📝 Markdown · 📕 PDF · 📗 表格 · 🖼 图片 · 🌐 HTML · 💻 代码
+- **扫描上限**：最多 14 层目录、4000 个文件；触顶时返回 `truncated` 标记，不静默丢文件
 
 ### Markdown 预览
 
@@ -20,17 +22,38 @@ DSH Web UI 的工作区文档库插件：在会话区新增一个 **📄 文档*
 - **Mermaid 图表**：```` ```mermaid ```` 直接渲染成图（按需加载，见下）
 - **YAML frontmatter**：预览时自动隐藏，编辑时保留原文
 - **Obsidian 式双链**：`[[笔记名]]`、`[[路径/笔记.md|别名]]`、`[[文件.pdf#page=17|第17页]]` 点击跳转
-- **相对链接与图片**：`[文本](./其他.md)`、`![图](./img/a.png)` 按当前文件目录解析
+- **相对链接与图片**：`[文本](./其他.md)`、`![图](./img/a.png)` **按当前文档所在目录**解析
+
+> **链接解析规则**（两套方言，与 Obsidian 一致）：
+>
+> | 写法 | 解析基准 |
+> | --- | --- |
+> | `[[双链]]` | **工作区根目录**；找不到时按文件名在全库范围匹配 |
+> | `[文本](./相对路径.md)` | **当前打开的文档**；`../` 可用 |
+>
+> 解析不依赖文件树是否收录该文件，所以深层目录里的 PDF / 图片也能打开。
 
 Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/dsh-client-ui-primitives`），因此渲染结果与聊天区完全一致，并自动跟随浅色/深色主题。若某个 DSH 版本没有导出该模块，插件会退回内置的轻量渲染器（支持标题/列表/表格/引用/代码块/双链）。
 
 ### 其他预览器
 
-- **PDF**：取回字节后包成 `Blob` 再交给浏览器原生阅读器，避免因 `application/octet-stream` 被当成下载；工具栏提供下载
+- **PDF**：取回字节后包成 `Blob` 再交给浏览器原生阅读器，避免因 `application/octet-stream` 被当成下载；`#page=17` 跳页锚点会保留到 Blob URL 上；工具栏提供下载
 - **图片**：滚轮缩放、拖拽平移、双击工具栏复位，支持 `png/jpg/gif/webp/svg/bmp/ico/avif`
 - **HTML**：在 **无 `allow-same-origin`** 的沙箱 iframe 中预览（不透明源，页面拿不到 GUI 的会话数据）
 - **代码 / 纯文本**：只读查看，带语言提示与高亮
 - **表格**：内置 SheetJS 解析 `xlsx/xlsm/xls/csv/tsv`，多工作表切换
+
+### 大文件保护
+
+代码 / 文本查看按体积分档，避免把大文件塞进渲染管线：
+
+| 体积 | 行为 |
+| --- | --- |
+| ≤ 200 KB | 正常语法高亮 |
+| 200 KB – 2 MB | 纯文本显示（不高亮） |
+| > 2 MB | 不渲染，只提供「新窗口 / 下载」 |
+
+在线编辑另有限制：超过 **6 MB** 的文本文件拒绝加载（`ctx.fs.readText` 自身没有上限）。
 
 ### 编辑
 
@@ -99,7 +122,7 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| POST | `/mdvault/api/list` | 扫描工作区，返回可预览文件列表 |
+| POST | `/mdvault/api/list` | 扫描工作区，返回可预览文件列表（含 `truncated` / `maxDepth`） |
 | POST | `/mdvault/api/read` | 读取文本文件（超过 6MB 拒绝，避免拖垮编辑器） |
 | POST | `/mdvault/api/write` | 写回文本文件 |
 | GET | `/mdvault/asset/<sessionId>/<rel>` | 返回文件原始字节（带正确 Content-Type 与 `nosniff`） |
@@ -109,12 +132,20 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 
 `xlsx.js` 与 `mermaid.js` 使用 ETag + `304`，避免重复下载数 MB 的资源。
 
+## 性能
+
+这一版针对卡顿做了三处关键优化：
+
+1. **目录默认折叠**。原先 `isOpen = !collapsed[path]` 会让**每个目录都处于展开状态**，首次打开就为工作区里每个文件建一个 DOM 行；现在只展开当前文档所在路径。
+2. **文档渲染结果记忆化**。`stripFrontmatter` / mermaid 检测 / `MarkdownText` 的 props 都做了 memo；`nav` 对象保持稳定标识。否则每次在筛选框敲一个字都会让整篇文档重新解析 + 重新高亮。
+3. **大文件分档**（见上）。代码查看不再把多 MB 的 `dist/*.js` 之类丢进高亮管线。
+
 ## 测试
 
 ```bash
-npm test              # 纯函数 + 宿主路由，共 72 项断言
-npm run test:helpers  # 链接改写、frontmatter、路径解析、mermaid 检测、SVG 清洗、apply()
-npm run test:host     # 宿主路由：路径越界、Content-Type、ETag/304、表格页
+npm test              # 纯函数 + 宿主路由，共 108 项断言
+npm run test:helpers  # 链接改写、链接解析规则、frontmatter、路径、mermaid、SVG 清洗、树展开、apply()
+npm run test:host     # 宿主路由：路径越界、Content-Type、ETag/304、表格页、深层目录扫描
 npm run probe:graph   # 诊断：确认 DSH 是否已把本插件加载为客户端模块，且浏览器拿到的是最新代码
 ```
 
