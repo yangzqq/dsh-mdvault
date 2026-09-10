@@ -20,6 +20,8 @@ const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
 let registration = null
 const headChildren = []
+/** document-level listeners the plugin installs (the link interceptor). */
+const documentListeners = []
 const sandbox = {
 	window: {
 		__ModuleLoader__: {
@@ -44,7 +46,21 @@ const sandbox = {
 			}
 		},
 		body: { hasAttribute() { return false } },
+		// The plugin registers its internal-link interceptor on the document in
+		// the CAPTURE phase; record it so tests can assert it was installed.
+		listeners: documentListeners,
+		addEventListener(type, fn, capture) { documentListeners.push({ type, fn, capture }) },
+		removeEventListener(type, fn, capture) {
+			const i = documentListeners.findIndex((l) => l.type === type && l.fn === fn && l.capture === capture)
+			if (i >= 0) documentListeners.splice(i, 1)
+		},
 	},
+	// Browser globals the module legitimately uses. A vm context does NOT
+	// inherit them, and parseUrl() would otherwise swallow the ReferenceError
+	// and report every URL as "not ours" — silently passing broken tests.
+	URL,
+	URLSearchParams,
+	AbortController,
 	console,
 }
 sandbox.globalThis = sandbox
@@ -87,7 +103,7 @@ function test(name, fn) {
 	}
 }
 
-const { rewriteInternalLinks, stripFrontmatter, toRelPath, fenceFor, langForPath, isTextDoc, decodeTarget, hasMermaidFence, sanitizeSvg, isStrippedSvgElement, isStrippedSvgAttr, resolveRelPath, resolveOpenTarget, findByPathIn, formatBytes, isDirOpen, WIKI_PREFIX, REL_PREFIX } = pure
+const { rewriteInternalLinks, stripFrontmatter, toRelPath, fenceFor, langForPath, isTextDoc, decodeTarget, hasMermaidFence, sanitizeSvg, isStrippedSvgElement, isStrippedSvgAttr, resolveRelPath, resolveOpenTarget, findByPathIn, formatBytes, isDirOpen, classifyInternalLink, anchorFromEvent, WIKI_PREFIX, REL_PREFIX } = pure
 
 console.log('rewriteInternalLinks')
 
@@ -414,6 +430,59 @@ await test('the registration runs inside a ctx.effect so the fiber owns it', () 
 	assert.ok(seen.effects.some((l) => typeof l === 'string' && l.includes('mdvault')), seen.effects.join(','))
 })
 
+await test('apply installs the internal-link interceptor in the CAPTURE phase', () => {
+	// Capture phase is what lets preventDefault() beat the platform's
+	// target="_blank" — the reason a click used to open a new browser tab.
+	const before = documentListeners.length
+	const { ctx } = makeCtx({})
+	mod.apply(ctx)
+	const added = documentListeners.slice(before).filter((l) => l.type === 'click')
+	assert.equal(added.length, 1, 'expected exactly one click listener per apply')
+	assert.equal(added[0].capture, true, 'must be registered with capture=true')
+})
+
+await test('the interceptor suppresses navigation even with no owner mounted', () => {
+	const { ctx } = makeCtx({})
+	mod.apply(ctx)
+	const listener = documentListeners.filter((l) => l.type === 'click').pop()
+
+	const root = { nodeType: 1, tagName: 'DIV', closest: (sel) => (sel === '[data-mdv-root]' ? root : null) }
+	const anchor = {
+		nodeType: 1, tagName: 'A',
+		hasAttribute: () => true,
+		getAttribute: () => REL_PREFIX + encodeURIComponent('收资资料/a.pdf#page=1'),
+		href: REL_PREFIX + encodeURIComponent('收资资料/a.pdf#page=1'),
+		closest: (sel) => (sel === '[data-mdv-root]' ? root : null),
+	}
+	let prevented = false
+	listener.fn({
+		button: 0,
+		defaultPrevented: false,
+		composedPath: () => [anchor, root],
+		preventDefault() { prevented = true },
+		stopPropagation() {},
+	})
+	assert.equal(prevented, true, 'a recognized internal link must never navigate')
+})
+
+await test('the interceptor leaves external links alone', () => {
+	const { ctx } = makeCtx({})
+	mod.apply(ctx)
+	const listener = documentListeners.filter((l) => l.type === 'click').pop()
+	const anchor = {
+		nodeType: 1, tagName: 'A', hasAttribute: () => true,
+		getAttribute: () => 'https://example.com/x', href: 'https://example.com/x',
+	}
+	let prevented = false
+	listener.fn({
+		button: 0, defaultPrevented: false,
+		composedPath: () => [anchor],
+		preventDefault() { prevented = true },
+		stopPropagation() {},
+	})
+	assert.equal(prevented, false, 'an external link must keep its default behavior')
+})
+
 await test('apply still works when ctx.get is unavailable (uses ctx.slots)', () => {
 	const { ctx, seen } = makeCtx({})
 	delete ctx.get
@@ -678,6 +747,84 @@ await test('an explicit toggle always wins over the selection default', () => {
 await test('a file directly in the workspace root opens no directory', () => {
 	assert.equal(isDirOpen('docs', {}, 'readme.md'), false)
 	assert.equal(isDirOpen('docs', {}, 'docs.md'), false)
+})
+
+console.log('classifyInternalLink — what a click on a rewritten link must yield')
+
+// The exact link reported as broken, verbatim.
+const REAL_LINK = '收资资料/证据标注PDF/澜沧县一体化基地220kV、110kV送出线路导线型号、长度统计.pdf#page=1'
+
+await test('the reported link survives the rewrite/classify round trip', () => {
+	const md = '[统计表 P1](' + REAL_LINK + ')'
+	const rewritten = rewriteInternalLinks(md)
+	const href = /\]\(([^)]+)\)/.exec(rewritten)
+	assert.ok(href !== null, 'no link produced from: ' + rewritten)
+	const hit = classifyInternalLink(href[1], 'http://127.0.0.1:3080')
+	assert.ok(hit !== null, 'classification failed for ' + href[1])
+	assert.equal(hit.kind, 'rel')
+	assert.equal(hit.target, REAL_LINK)
+})
+
+await test('classification works when the platform re-encoded the path', () => {
+	const hit = classifyInternalLink(REL_PREFIX + encodeURIComponent(REAL_LINK), 'http://127.0.0.1:3080')
+	assert.ok(hit !== null)
+	assert.equal(hit.target, REAL_LINK)
+})
+
+await test('classification works when the platform DECODED the path', () => {
+	// A normalizer that decodes leaves the target literal, and an originally
+	// encoded '#' becomes a real fragment — which must be re-attached, or the
+	// PDF deep link silently loses its page.
+	const hit = classifyInternalLink('https://dsh-mdvault.invalid/r/收资资料/a.pdf#page=1', '')
+	assert.ok(hit !== null)
+	assert.equal(hit.kind, 'rel')
+	assert.equal(hit.target, '收资资料/a.pdf#page=1')
+})
+
+await test('an encoded fragment inside the path is preserved', () => {
+	const hit = classifyInternalLink(REL_PREFIX + encodeURIComponent('a.pdf#page=7'), '')
+	assert.equal(hit.target, 'a.pdf#page=7')
+})
+
+await test('wikilinks and relative links classify to different dialects', () => {
+	assert.equal(classifyInternalLink(WIKI_PREFIX + encodeURIComponent('note'), '').kind, 'wiki')
+	assert.equal(classifyInternalLink(REL_PREFIX + encodeURIComponent('./note.md'), '').kind, 'rel')
+})
+
+await test('foreign and malformed URLs are never claimed', () => {
+	for (const href of [
+		'https://example.com/a.md',
+		'http://127.0.0.1:3080/somewhere',
+		'https://dsh-mdvault.invalid/other/x',
+		'https://dsh-mdvault.invalid/r/',
+		'mailto:x@y.z',
+		'#anchor',
+		'',
+		null,
+		undefined,
+		'not a url at all',
+	]) {
+		assert.equal(classifyInternalLink(href, 'http://127.0.0.1:3080'), null, String(href))
+	}
+})
+
+await test('a relative href resolves against the provided base', () => {
+	const hit = classifyInternalLink('/r/' + encodeURIComponent('a.md'), 'https://dsh-mdvault.invalid')
+	assert.ok(hit !== null)
+	assert.equal(hit.target, 'a.md')
+})
+
+await test('the anchor lookup finds the anchor through nested content', () => {
+	const anchor = { nodeType: 1, tagName: 'A', hasAttribute: () => true }
+	const span = { nodeType: 1, tagName: 'SPAN' }
+	const div = { nodeType: 1, tagName: 'DIV' }
+	assert.equal(anchorFromEvent({ composedPath: () => [span, anchor, div] }), anchor)
+})
+
+await test('the anchor lookup falls back to closest() without composedPath', () => {
+	const anchor = { nodeType: 1, tagName: 'A' }
+	assert.equal(anchorFromEvent({ target: { closest: () => anchor } }), anchor)
+	assert.equal(anchorFromEvent({ target: null }), null)
 })
 
 console.log('')
