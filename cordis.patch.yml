@@ -1,0 +1,15 @@
+# dsh-mdvault bundle patch
+#
+# Manual mount (no npm publish needed): this package lives directly in the
+# profile's node_modules and is mounted by the profile patch layer:
+#
+#   ~/.dsh/profiles/web/cordis.patch.yml
+#   - insert:
+#       - id: mdvault
+#         name: dsh-mdvault
+#
+# Or, when published to npm, install with:
+#   dsh plugin --profile web add dsh-mdvault
+- insert:
+    - id: mdvault
+      name: 'dsh-mdvault'
