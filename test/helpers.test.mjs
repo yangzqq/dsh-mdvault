@@ -29,7 +29,9 @@ const sandbox = {
 	},
 	document: {
 		head: { appendChild(el) { headChildren.push(el) } },
-		getElementById() { return null },
+		// Model the id registry: insertStyles dedupes through it, so returning
+		// null unconditionally would hide whether dedupe actually works.
+		getElementById(id) { return headChildren.find((el) => el.id === id) ?? null },
 		createElement(tag) {
 			return {
 				tagName: tag, id: '', textContent: '', className: '',
@@ -346,59 +348,120 @@ if (typeof globalThis.DOMParser === 'undefined') {
 
 console.log('apply() against a fake client context')
 
-await test('apply registers the 文档 tab on the conversation.view slot', async () => {
-	const injected = []
-	const registered = []
-	const disposers = []
-	const ctx = {
-		effect(fn, label) { disposers.push({ label, dispose: fn() }) },
-		get(name) {
-			if (name === 'slots') {
-				return {
-					inject(key, cb) { injected.push({ key, cb }); return () => {} },
-					register(options, component) { registered.push({ options, component }); return () => {} },
-				}
-			}
-			return undefined
+/**
+ * Fake client context. `services` are what `ctx.get` answers; the scoped
+ * `ctx.inject(deps, cb)` form runs its callback only when every named service
+ * is present, mirroring Cordis.
+ */
+function makeCtx(services) {
+	const seen = { registered: [], slotInjects: [], scoped: [], effects: [] }
+	const slots = {
+		inject(key, cb) { seen.slotInjects.push(key); return cb() },
+		register(options, component) {
+			seen.registered.push({ options, component })
+			return () => {}
 		},
+	}
+	const ctx = {
+		effect(fn, label) { seen.effects.push(label); return fn() },
+		get(name) { return name === 'slots' ? slots : services[name] },
+		inject(deps, cb) {
+			seen.scoped.push([...deps])
+			if (deps.every((d) => services[d] !== undefined)) cb(ctx)
+			return () => {}
+		},
+	}
+	return { ctx, seen }
+}
+
+function emptySeen() {
+	return { registered: [], slotInjects: [], scoped: [], effects: [] }
+}
+
+await test('exports name / inject / apply the way a DSH client plugin must', () => {
+	// The missing `inject` export was the actual bug: without it the plugin is
+	// activated concurrently with the renderer, loses the race for the `slots`
+	// service, and silently registers nothing while still reporting as active.
+	assert.equal(mod.name, 'dsh-mdvault')
+	assert.deepEqual([...mod.inject], ['slots'])
+	assert.equal(typeof mod.apply, 'function')
+})
+
+await test('apply registers the 文档 tab on the conversation.view slot', () => {
+	const { ctx, seen } = makeCtx({})
+	mod.apply(ctx)
+	assert.deepEqual(seen.slotInjects, ['conversation.view'])
+	assert.equal(seen.registered.length, 1)
+	assert.equal(seen.registered[0].options.name, 'conversation.view')
+	assert.equal(seen.registered[0].options.id, 'mdvault')
+	assert.equal(seen.registered[0].options.label, '文档')
+	assert.equal(typeof seen.registered[0].component, 'function')
+})
+
+await test('the registration runs inside a ctx.effect so the fiber owns it', () => {
+	const { ctx, seen } = makeCtx({})
+	mod.apply(ctx)
+	assert.ok(seen.effects.some((l) => typeof l === 'string' && l.includes('mdvault')), seen.effects.join(','))
+})
+
+await test('apply still works when ctx.get is unavailable (uses ctx.slots)', () => {
+	const { ctx, seen } = makeCtx({})
+	delete ctx.get
+	ctx.slots = {
+		inject(key, cb) { seen.slotInjects.push(key); return cb() },
+		register(o, c) { seen.registered.push({ options: o, component: c }); return () => {} },
 	}
 	mod.apply(ctx)
-	assert.deepEqual(injected.map((i) => i.key), ['conversation.view'])
-	// The slot must be declared before it can be registered into.
-	injected[0].cb()
-	assert.equal(registered.length, 1)
-	assert.equal(registered[0].options.name, 'conversation.view')
-	assert.equal(registered[0].options.id, 'mdvault')
-	assert.equal(registered[0].options.label, '文档')
-	assert.equal(typeof registered[0].component, 'function')
+	assert.equal(seen.registered.length, 1)
 })
 
-await test('apply injects its stylesheet exactly once', () => {
-	assert.equal(headChildren.length, 1)
-	assert.ok(headChildren[0].textContent.includes('.mdvault') || headChildren[0].textContent.includes('.mdv-'))
+await test('apply warns instead of silently doing nothing when slots is absent', () => {
+	// Regression guard: the old code returned silently here, which is how the
+	// tab could vanish with no diagnostic anywhere.
+	const warnings = []
+	const originalWarn = console.warn
+	console.warn = (...args) => { warnings.push(args.join(' ')) }
+	try {
+		mod.apply({ effect(fn) { return fn() }, inject() {}, get() { return undefined } })
+	} finally {
+		console.warn = originalWarn
+	}
+	assert.equal(warnings.length, 1)
+	assert.ok(warnings[0].includes('slots'), warnings[0])
 })
 
-await test('apply tolerates a context without the slots service', () => {
-	const ctx = { effect(fn) { fn() }, get() { return undefined } }
-	assert.doesNotThrow(() => mod.apply(ctx))
+await test('apply injects its stylesheet exactly once, across repeated applies', () => {
+	// Several apply() calls have already run above; insertStyles must dedupe on
+	// its element id rather than appending a new <style> every activation
+	// (Cordis re-applies a plugin on every hot reload).
+	const { ctx } = makeCtx({})
+	mod.apply(ctx)
+	mod.apply(ctx)
+	assert.equal(headChildren.length, 1, 'expected exactly one injected style element')
+	assert.ok(headChildren[0].textContent.includes('.mdv-'), 'stylesheet body missing')
+	assert.ok(headChildren[0].textContent.includes('.mdv-mermaid'), 'mermaid styles missing')
 })
 
-await test('apply mounts the optional better-sidebar integration when present', () => {
+await test('betterSidebar is awaited scoped, never declared a hard dependency', () => {
+	// Declaring it in `inject` would leave the plugin permanently pending on a
+	// deployment without dsh-better-sidebar.
+	assert.ok(!mod.inject.includes('betterSidebar'), 'must not be a hard dependency')
+	const { ctx, seen } = makeCtx({ betterSidebar: undefined })
+	mod.apply(ctx)
+	assert.deepEqual(seen.scoped, [['betterSidebar']], 'must be awaited through ctx.inject')
+	assert.equal(seen.registered.length, 1, 'the tab must register without better-sidebar present')
+})
+
+await test('the better-sidebar integration mounts when the service is present', () => {
 	const viewers = []
 	const tabs = []
-	const ctx = {
-		effect(fn) { fn() },
-		get(name) {
-			if (name === 'betterSidebar') {
-				return {
-					registerFileViewer(d) { viewers.push(d); return () => {} },
-					registerTab(d) { tabs.push(d); return () => {} },
-					openTab() {},
-				}
-			}
-			return undefined
+	const { ctx } = makeCtx({
+		betterSidebar: {
+			registerFileViewer(d) { viewers.push(d); return () => {} },
+			registerTab(d) { tabs.push(d); return () => {} },
+			openTab() {},
 		},
-	}
+	})
 	mod.apply(ctx)
 	assert.equal(viewers.length, 1)
 	assert.equal(viewers[0].id, 'mdvault-markdown')
