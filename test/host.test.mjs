@@ -152,6 +152,14 @@ await writeFile(join(ROOT, 'sub', 'deep.md'), '# deep\n', 'utf8')
 await mkdir(join(ROOT, 'node_modules'), { recursive: true })
 await writeFile(join(ROOT, 'node_modules', 'dep.md'), '# dep\n', 'utf8')
 
+// One small fixture per extension family, for the content-type table.
+for (const name of [
+	'pkg.json', 'notes.yaml', 'style.css', 'sheet.xlsx', 'pic.png', 'pic.jpg',
+	'pic.jpeg', 'icon.svg', 'photo.webp', 'doc.pdf', 'Dockerfile', 'mystery.bin',
+]) {
+	await writeFile(join(ROOT, name), 'x', 'utf8')
+}
+
 console.log('route registration')
 
 await test('registers the four documented route families', () => {
@@ -264,11 +272,25 @@ console.log('/mdvault/asset')
 const asset = routeFor('/mdvault/asset')
 
 await test('serves a file with the right content type', async () => {
+	// One fixture per extension family, so the table-driven contentTypeOf is
+	// checked against every family it derives from.
 	const cases = [
 		['README.md', 'text/plain; charset=utf-8'],
 		['page.html', 'text/html; charset=utf-8'],
 		['main.py', 'text/plain; charset=utf-8'],
 		['data.csv', 'text/plain; charset=utf-8'],
+		['pkg.json', 'application/json; charset=utf-8'],
+		['notes.yaml', 'text/plain; charset=utf-8'],
+		['style.css', 'text/plain; charset=utf-8'],
+		['sheet.xlsx', 'application/octet-stream'],
+		['pic.png', 'image/png'],
+		['pic.jpg', 'image/jpeg'],
+		['pic.jpeg', 'image/jpeg'],
+		['icon.svg', 'image/svg+xml'],
+		['photo.webp', 'image/webp'],
+		['doc.pdf', 'application/pdf'],
+		['Dockerfile', 'text/plain; charset=utf-8'],
+		['mystery.bin', 'application/octet-stream'],
 	]
 	for (const [rel, ct] of cases) {
 		const res = await call(asset, { method: 'GET', url: '/mdvault/asset/sess/' + rel })

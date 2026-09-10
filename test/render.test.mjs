@@ -565,6 +565,42 @@ await test('the composer is hidden while the view is mounted, and restored on un
 		'the attribute must be removed when the view unmounts, or the composer would stay hidden forever')
 })
 
+await test('a failing READ is surfaced instead of rendering blank', async () => {
+	resetHarness()
+	apiResponses.set('list', { ok: true, files: FILES, root: '/ws', truncated: false, maxDepth: 14 })
+	// The listing succeeds but the document itself cannot be read.
+	apiResponses.set('read', { ok: false, error: '文件过大（20MB），超过 6MB 的在线编辑上限' })
+	const out = await mount(getView(), { sessionId: SESSION })
+	assert.ok(JSON.stringify(out).includes('超过 6MB'), 'the read error should be surfaced')
+})
+
+await test('selecting an asset takes over the pane (no stale document)', async () => {
+	resetHarness(true)
+	// Both files at the root, so this tests the pane switch only — tree
+	// navigation is covered elsewhere.
+	const files = [{ path: 'README.md', name: 'README.md' }, { path: 'doc.pdf', name: 'doc.pdf' }]
+	apiResponses.set('list', { ok: true, files, root: '/ws', truncated: false, maxDepth: 14 })
+	apiResponses.set('read', { ok: true, text: '# first\n' })
+	const View = getView()
+	const props = { sessionId: SESSION }
+
+	const out1 = await mount(View, props)
+	assert.ok(markdownTextCalls.length > 0, 'the markdown document should render first')
+	assert.ok(String(markdownTextCalls[markdownTextCalls.length - 1].text).includes('first'))
+
+	const pdfRow = findAll(out1, (n) => n.props && typeof n.props.className === 'string'
+		&& n.props.className.includes('mdv-filerow')
+		&& typeof n.props.children === 'string' && n.props.children.includes('doc.pdf'))[0]
+	assert.ok(pdfRow, 'no tree row for doc.pdf')
+	pdfRow.props.onClick()
+	await flushEffects()
+	dirty = false
+	const out2 = await mount(View, props)
+	const text2 = JSON.stringify(out2)
+	assert.ok(text2.includes('doc.pdf'), 'the pdf should now own the pane')
+	assert.ok(!text2.includes('正在读取'), 'the pane should not still be loading a text document')
+})
+
 console.log('')
 console.log(passed + ' assertions passed' + (failures.length ? ', ' + failures.length + ' FAILED' : ''))
 if (failures.length) console.log('failed: ' + failures.join(' | '))
