@@ -1,36 +1,59 @@
 /**
  * Wire dsh-mdvault into a dsh profile so it appears in the plugin manager.
  *
- * Why this exists as a script: the plugin manager enumerates exactly the
- * profile's `package.json` dependencies, so a plugin mounted only through a
- * hand-written `cordis.patch.yml` insert row is invisible to it. Becoming a
- * dependency + a bundles entry is what `dsh-cmdgo-provider` does.
+ * Two facts drive this script:
  *
- * The one non-obvious consequence, handled here: once `dsh-mdvault` is a
- * bundles entry, its own packaged `cordis.patch.yml` is applied as a bundle
- * layer — and that file already contains the insert row. Leaving the
- * hand-written row in the profile patch too would mount the same entry id
- * twice, so this script removes it.
+ * 1. The plugin manager (@linxin666/dsh-client-ui-plugin-manager) builds its
+ *    list with `for (const name of Object.keys(manifest.dependencies).sort())`
+ *    — it enumerates exactly the profile's package.json dependencies, then
+ *    reads each package's own package.json for the version and its
+ *    cordis.patch.yml for the entry ids it claims. A plugin mounted only
+ *    through a hand-written cordis.patch.yml insert row is invisible to it.
+ *
+ * 2. Once the package is a `dsh.profile.bundles` entry, its OWN
+ *    cordis.patch.yml is applied as a bundle layer — and that file already
+ *    contains the insert row. Leaving the hand-written row in the profile patch
+ *    as well would mount the same entry id twice.
  *
  * Idempotent, and it backs up every file it touches before writing.
  *
- * Usage: node tools/install-into-profile.mjs [--profile web] [--apply]
+ * Usage: node tools/install-into-profile.mjs [--profile web] [--mode link|tgz] [--apply]
  *        (without --apply it only prints the planned changes)
+ *
+ * --mode link (default)
+ *     The profile depends on the SOURCE DIRECTORY through `link:`, and
+ *     node_modules/<name> becomes a junction to it. Editing the source and
+ *     restarting `dsh web` is the whole workflow — no repack step. Use this
+ *     while developing.
+ *
+ * --mode tgz
+ *     The profile depends on a packed tarball copied into ~/.agents. Use this
+ *     to consume a frozen artifact, or on a machine that should not see your
+ *     working tree.
+ *
+ * IMPORTANT: with `file:`-on-a-tarball, running `pnpm install` (which the DSH
+ * startup can do) extracts the tarball over node_modules/<name> and destroys
+ * anything not shipped in it — a .git directory, for instance. That is exactly
+ * why `link:` is the default here.
  */
-import { readFile, writeFile, copyFile, stat } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { readFile, writeFile, copyFile, stat, lstat, readlink, symlink, rename, mkdir, rm } from 'node:fs/promises'
+import { join, dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const pkgRoot = join(here, '..')
+const pkgRoot = resolve(here, '..')
 
 const argv = process.argv.slice(2)
 const apply = argv.includes('--apply')
-const profileIdx = argv.indexOf('--profile')
-const profileName = profileIdx >= 0 ? argv[profileIdx + 1] : 'web'
-if (!profileName) {
-	console.error('usage: node tools/install-into-profile.mjs [--profile <name>] [--apply]')
+const readFlag = (name, fallback) => {
+	const i = argv.indexOf('--' + name)
+	return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : fallback
+}
+const profileName = readFlag('profile', 'web')
+const mode = readFlag('mode', 'link')
+if (!['link', 'tgz'].includes(mode)) {
+	console.error('--mode must be link or tgz')
 	process.exit(2)
 }
 
@@ -38,17 +61,11 @@ const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
 const profileDir = join(dshHome, 'profiles', profileName)
 const profilePkgPath = join(profileDir, 'package.json')
 const profilePatchPath = join(profileDir, 'cordis.patch.yml')
+const moduleDir = join(profileDir, 'node_modules')
 
 const manifest = JSON.parse(await readFile(join(pkgRoot, 'package.json'), 'utf8'))
 const name = manifest.name
 const version = manifest.version
-const tarball = `${name}-${version}.tgz`
-const tarballSrc = join(pkgRoot, tarball)
-const agentsDir = join(homedir(), '.agents')
-const tarballDest = join(agentsDir, tarball)
-// Forward slashes: a Windows path in a JSON spec is safer this way, and this is
-// exactly the form the existing dsh-cmdgo-provider dependency uses.
-const fileSpec = 'file:' + tarballDest.replace(/\\/g, '/')
 
 /** The entry id the packaged cordis.patch.yml claims. */
 const patchText = await readFile(join(pkgRoot, 'cordis.patch.yml'), 'utf8')
@@ -59,37 +76,49 @@ if (idMatch === null) {
 }
 const entryId = idMatch[1]
 
-console.log('package   : ' + name + ' v' + version)
-console.log('entry id  : ' + entryId)
-console.log('profile   : ' + profileDir)
-console.log('tarball   : ' + tarballSrc)
+const tarball = `${name}-${version}.tgz`
+const tarballSrc = join(pkgRoot, tarball)
+const agentsDir = join(homedir(), '.agents')
+const tarballDest = join(agentsDir, tarball)
+
+// Forward slashes: safer inside a JSON spec, and the form the existing
+// dsh-cmdgo-provider dependency already uses.
+const linkSpec = 'link:' + pkgRoot.replace(/\\/g, '/')
+const tgzSpec = 'file:' + tarballDest.replace(/\\/g, '/')
+const spec = mode === 'link' ? linkSpec : tgzSpec
+const linkTarget = join(moduleDir, name)
+
+console.log('package    : ' + name + ' v' + version)
+console.log('entry id   : ' + entryId)
+console.log('mode       : ' + mode)
+console.log('profile    : ' + profileDir)
+console.log('spec       : ' + spec)
+if (mode === 'tgz') console.log('tarball    : ' + tarballSrc)
 console.log('')
 
-await stat(tarballSrc).catch(() => {
-	console.error('missing ' + tarballSrc + ' — run `npm pack` first')
-	process.exit(1)
-})
+if (mode === 'tgz') {
+	await stat(tarballSrc).catch(() => {
+		console.error('missing ' + tarballSrc + ' — run `npm pack` first')
+		process.exit(1)
+	})
+}
 
 // ── profile package.json ────────────────────────────────────────────────────
 
-const profilePkgRaw = await readFile(profilePkgPath, 'utf8')
-const profilePkg = JSON.parse(profilePkgRaw)
-
+const profilePkg = JSON.parse(await readFile(profilePkgPath, 'utf8'))
 profilePkg.dsh ??= {}
 profilePkg.dsh.profile ??= {}
 const bundles = (profilePkg.dsh.profile.bundles ??= [])
 const dependencies = (profilePkg.dependencies ??= {})
 
 const bundleAlready = bundles.includes(name)
-const depAlready = Object.prototype.hasOwnProperty.call(dependencies, name)
-const depIsCurrent = dependencies[name] === fileSpec
-
+const depBefore = dependencies[name]
 if (!bundleAlready) bundles.push(name)
-dependencies[name] = fileSpec
+dependencies[name] = spec
 
 console.log('profile package.json')
-console.log('  dsh.profile.bundles  ' + (bundleAlready ? 'already present' : '+ ' + name))
-console.log('  dependencies.' + name + '  ' + (depAlready ? (depIsCurrent ? 'already current' : 'updated -> ' + fileSpec) : '+ ' + fileSpec))
+console.log('  dsh.profile.bundles       ' + (bundleAlready ? 'already present' : '+ ' + name))
+console.log('  dependencies.' + name + '  ' + (depBefore === undefined ? '+ ' + spec : depBefore === spec ? 'already current' : depBefore + '  ->  ' + spec))
 
 // ── profile cordis.patch.yml ────────────────────────────────────────────────
 
@@ -136,9 +165,8 @@ function removeInsertBlock(text, id) {
 		removed += 1
 		i = j
 	}
-	let result = out.join('\n')
 	// Collapse any run of blank lines left by the removal.
-	result = result.replace(/\n{3,}/g, '\n\n')
+	const result = out.join('\n').replace(/\n{3,}/g, '\n\n')
 	return { text: result, removed }
 }
 
@@ -146,10 +174,38 @@ const pruned = removeInsertBlock(profilePatch, entryId)
 
 console.log('')
 console.log('profile cordis.patch.yml')
-if (bundleAlready) {
-	console.log('  (bundle already present; the manual row is still removed if found)')
-}
 console.log('  insert row for "' + entryId + '": ' + (pruned.removed > 0 ? 'removed (' + pruned.removed + ' block)' : 'none found'))
+
+// ── node_modules link (link mode) ───────────────────────────────────────────
+
+/** What is currently at node_modules/<name>? */
+async function currentState() {
+	try {
+		const st = await lstat(linkTarget)
+		if (st.isSymbolicLink()) {
+			const target = await readlink(linkTarget)
+			return { kind: 'link', target }
+		}
+		return { kind: 'dir' }
+	} catch {
+		return { kind: 'absent' }
+	}
+}
+
+const state = await currentState()
+if (mode === 'link') {
+	console.log('')
+	console.log('node_modules/' + name)
+	if (state.kind === 'link' && resolve(state.target) === pkgRoot) {
+		console.log('  already a junction to the source — nothing to do')
+	} else if (state.kind === 'link') {
+		console.log('  junction -> ' + state.target + '   (will repoint to ' + pkgRoot + ')')
+	} else if (state.kind === 'dir') {
+		console.log('  a real directory   (will be moved aside, then replaced by a junction)')
+	} else {
+		console.log('  absent             (will create the junction)')
+	}
+}
 
 if (!apply) {
 	console.log('')
@@ -169,13 +225,6 @@ const backup = async (path) => {
 	return target
 }
 
-await copyFile(tarballSrc, join(agentsDir, tarball)).catch(async () => {
-	// ~/.agents may not exist yet.
-	const { mkdir } = await import('node:fs/promises')
-	await mkdir(agentsDir, { recursive: true })
-	await copyFile(tarballSrc, join(agentsDir, tarball))
-})
-
 const pkgBackup = await backup(profilePkgPath)
 const patchBackup = await backup(profilePatchPath)
 
@@ -183,10 +232,36 @@ const patchBackup = await backup(profilePatchPath)
 await writeFile(profilePkgPath, JSON.stringify(profilePkg, null, 2) + '\n', 'utf8')
 await writeFile(profilePatchPath, pruned.text, 'utf8')
 
+let linkNote = ''
+if (mode === 'link') {
+	await mkdir(moduleDir, { recursive: true })
+	if (state.kind === 'dir') {
+		// Move rather than delete: reversible if the junction turns out wrong.
+		const aside = linkTarget + '.replaced-' + stamp
+		await rename(linkTarget, aside)
+		linkNote = '  moved old directory aside -> ' + aside + '\n'
+	} else if (state.kind === 'link') {
+		await rm(linkTarget, { force: true })
+	}
+	// 'junction' on Windows needs no elevation and no developer mode.
+	await symlink(pkgRoot, linkTarget, process.platform === 'win32' ? 'junction' : 'dir')
+	linkNote += '  node_modules/' + name + ' -> ' + pkgRoot + ' (junction)\n'
+} else {
+	await mkdir(agentsDir, { recursive: true }).catch(() => {})
+	await copyFile(tarballSrc, tarballDest)
+	linkNote = '  tarball -> ' + tarballDest + '\n'
+}
+
 console.log('')
 console.log('applied:')
-console.log('  tarball  -> ' + tarballDest)
-console.log('  package.json    (backup: ' + pkgBackup + ')')
+console.log(linkNote.trimEnd())
+console.log('  package.json     (backup: ' + pkgBackup + ')')
 console.log('  cordis.patch.yml (backup: ' + patchBackup + ')')
 console.log('')
-console.log('next: pnpm install in ' + profileDir + ', then restart dsh web')
+if (mode === 'link') {
+	console.log('maintain the source at: ' + pkgRoot)
+	console.log('workflow: edit -> restart `dsh web`. No repack needed.')
+	console.log('(lib/client.js even hot-reloads; only lib/index.js needs the restart.)')
+} else {
+	console.log('next: pnpm install in ' + profileDir + ', then restart dsh web')
+}

@@ -107,91 +107,107 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 - **无构建步骤**：`lib/` 是可直接运行的纯 JavaScript
 - **无 npm 依赖**：SheetJS 与 Mermaid 已打包在 `dist/`，不需要外网
 
-## 安装方式一：本地目录（最快，但不进插件管理列表）
+## 维护：源码在哪里
 
-1. 把整个 `dsh-mdvault` 文件夹复制到目标机器的：
-
-   ```
-   ~/.dsh/profiles/<profile>/node_modules/dsh-mdvault
-   ```
-
-   Windows 默认即 `C:\Users\<你>\.dsh\profiles\web\node_modules\dsh-mdvault`
-
-2. 在该 profile 的 `cordis.patch.yml`（如 `~/.dsh/profiles/web/cordis.patch.yml`）加入：
-
-   ```yaml
-   - insert:
-       - id: mdvault
-         name: dsh-mdvault
-   ```
-
-3. 重启 `dsh web`。聊天区顶部出现"📄 文档"标签页即成功。
-
-> **注意**：`lib/client.js`（浏览器半边）的改动会被 DSH 自带的 HMR 监听并热重载；但 `lib/index.js`（宿主半边）的改动**不会**热重载，修改宿主代码后需要重启 `dsh web`。
-
-这种方式**不会**出现在「设置 → 插件管理」列表里，因为该列表只枚举 profile `package.json` 的 `dependencies`。想要能统一管理，用下面的打包安装方式。
-
-## 安装方式二：打包成 tgz（推荐，可进插件管理列表）
-
-插件管理列表（`@linxin666/dsh-client-ui-plugin-manager`）的枚举规则是：
+**源码仓库在 `~/.agents/dsh-mdvault/`**（Windows: `C:\Users\<你>\.agents\dsh-mdvault`）。
+它就是一个普通的 git 仓库，含 `.git`、`lib/`、`dist/`、`test/`、`tools/`。
 
 ```
-for (const name of Object.keys(manifest.dependencies).sort()) → 一行
+~/.agents/dsh-mdvault/            ← 唯一源码位置，在这里改代码、提交
 ```
 
-即**只列 profile `package.json` 的 `dependencies`**，然后逐行读取
-`node_modules/<name>/package.json` 拿版本、读 `node_modules/<name>/cordis.patch.yml`
-拿它声明的挂载行。所以要让插件出现在列表里，它必须是一个**被声明的依赖**。
+### 为什么不在 node_modules 里维护
 
-### 打包
+profile 的依赖是 `link:`，所以 `node_modules/dsh-mdvault` 只是**指向上面那个目录的链接**，
+不是一份拷贝。这样做的直接原因是一个真实踩过的坑：
+
+> 早先依赖写成 `file:...tgz` 时，`dsh web` 启动过程中的 `pnpm install` 会把 tgz
+> **解包覆盖**到 `node_modules/dsh-mdvault`，把 `.git`、`tools/` 等**没有打进包里**的
+> 文件全部删掉。源码（含 git 历史）就是这样丢过一次的，靠事前的备份才救回来。
+
+`link:` 之后不存在"解包覆盖"这一步，源码目录永远是你的工作树。
+
+### 日常流程
 
 ```bash
-npm pack                 # 产出 dsh-mdvault-<version>.tgz
+cd ~/.agents/dsh-mdvault
+# 改代码 ...
+npm test                 # 134 项断言
+git commit -am "..."
+# 然后重启 dsh web
 ```
 
-> 若 npm 默认缓存在当前环境不可写（沙箱 / 权限），改用工作区内的缓存：
-> `npm pack --cache ./.npm-cache`
+**热重载规则**（DSH 自带 `dsh-client-hmr`）：
 
-产物约 1.3 MB（解包约 4.7 MB），含 `lib/`、`dist/`（SheetJS + Mermaid）、
-`test/`、`cordis.patch.yml`、`README.md`、`LICENSE`。
+| 改了什么 | 生效方式 |
+| --- | --- |
+| `lib/client.js`（浏览器半边） | 通常自动热重载；没生效就硬刷新页面（`Ctrl+Shift+R`） |
+| `lib/index.js`（宿主半边） | **必须重启 `dsh web`** |
+| `package.json` 的 `dsh.client` / `cordis.patch.yml` | **必须重启 `dsh web`** |
 
-### 安装
-
-把 tgz 放到一个固定位置（例如 `~/.agents/`），然后：
+判断浏览器跑的是哪个版本：工具栏右端有构建号（如 `v1.2.1`）。
+两个诊断命令：
 
 ```bash
-dsh plugin --profile web add file:C:/Users/<你>/.agents/dsh-mdvault-1.2.1.tgz
+npm run probe:graph    # 插件是否已成为客户端模块？磁盘 rev 与注册的是否一致？
+npm run verify:served  # 服务端发出的字节是否就是磁盘这份，且包含预期功能？
 ```
 
-或手工两步：
+### 重新接入（换机器 / 迁移后）
 
-1. 在 profile `package.json` 中登记依赖与 bundle：
+```bash
+cd ~/.agents/dsh-mdvault
+node tools/install-into-profile.mjs --profile web          # 先 dry-run 看计划
+node tools/install-into-profile.mjs --profile web --apply  # 实际写入
+```
 
-   ```json
-   {
-     "dsh": { "profile": { "bundles": [ "...", "dsh-mdvault" ] } },
-     "dependencies": {
-       "dsh-mdvault": "file:C:/Users/<你>/.agents/dsh-mdvault-1.2.1.tgz"
-     }
-   }
-   ```
+脚本做三件事，幂等，写之前逐文件备份：
 
-2. ⚠️ **同时删掉 `cordis.patch.yml` 里手工加的那段 `- insert: - id: mdvault`**。
+1. 在 profile `package.json` 的 `dsh.profile.bundles` 里加上 `dsh-mdvault`
+2. 把依赖写成 `link:<源码目录>`
+3. **删掉 `cordis.patch.yml` 里那行手写 `- insert:`**
 
-   因为 `dsh-mdvault` 一旦成为 bundles 条目，它自己包内的 `cordis.patch.yml`
-   就会作为 bundle 层被套用（里面已经写了同样的 insert 行）。两处都写就是
-   **同一个 id 被挂载两次**，属于重复挂载。
+第 3 步是必须的：包一旦成为 bundles 条目，**它自带的 `cordis.patch.yml` 就会作为 bundle
+层被套用**，而那个文件里已经写了同样的 insert 行。两处都写 = 同一个 id 挂载两次。
 
-3. 安装依赖并重启：
+## 为什么必须是被声明的依赖
 
-   ```bash
-   cd ~/.dsh/profiles/web && pnpm install
-   # 然后重启 dsh web
-   ```
+插件管理列表（`@linxin666/dsh-client-ui-plugin-manager`）的枚举逻辑就一行：
+
+```js
+for (const name of Object.keys(manifest.dependencies).sort())   // → 一行
+```
+
+它**只列 profile `package.json` 的 `dependencies`**，再逐行去 `node_modules/<name>/`
+读版本号和 `cordis.patch.yml`。所以只靠 `cordis.patch.yml` 里一行手写 insert 挂载的插件，
+目录虽然在 `node_modules` 里，但**管理器看不见它**。
+
+## 发布到其他机器（tgz 方式）
+
+本机用 `link:` 开发；要给别人装、或要一份冻结的产物时，再打包：
+
+```bash
+cd ~/.agents/dsh-mdvault
+npm pack                       # 产出 dsh-mdvault-<version>.tgz（约 1.3 MB）
+# 若 npm 默认缓存不可写：npm pack --cache ./.npm-cache
+```
+
+产物含 `lib/`、`dist/`（SheetJS + Mermaid）、`test/`、`cordis.patch.yml`、`README.md`、`LICENSE`。
+**不含 `.git`** —— 所以它只是发布物，不能当源码目录用。
+
+在目标机器上：
+
+```bash
+dsh plugin --profile web add file:C:/path/to/dsh-mdvault-1.2.1.tgz
+```
+
+或手工登记依赖与 bundles 条目后 `pnpm install`；**同样记得删掉手写 insert 行**。
+
+> 用 `file:` + tgz 时，改动源码后必须**重新打包并重装**才会生效。本机开发请用 `link:`。
 
 ### 为什么 tgz 里带 `test/`
 
-`files` 里包含了 `test/`，所以安装后仍可自检：
+`files` 里包含 `test/`，所以装完仍可自检：
 
 ```bash
 cd ~/.dsh/profiles/web/node_modules/dsh-mdvault && npm test   # 134 项断言
@@ -199,11 +215,10 @@ cd ~/.dsh/profiles/web/node_modules/dsh-mdvault && npm test   # 134 项断言
 
 ## 卸载
 
-- **tgz 方式**：`dsh plugin --profile web remove dsh-mdvault`（或从 profile
-  `package.json` 移除该依赖与 bundles 条目），再 `pnpm install`。
-- **本地目录方式**：从 `cordis.patch.yml` 删除对应 `- insert:` 块，并删除
-  `node_modules/dsh-mdvault` 目录，重启即可。
-
+- **link: 方式**：`node tools/install-into-profile.mjs` 只负责接入；卸载就从 profile
+  `package.json` 移除 `dsh-mdvault` 依赖与 bundles 条目，并删掉 `node_modules/dsh-mdvault`
+  这个链接（**不要删 `~/.agents/dsh-mdvault`**，那是你的源码）。
+- **tgz 方式**：`dsh plugin --profile web remove dsh-mdvault`，再 `pnpm install`。
 
 ## 插件注册的 HTTP 路由
 
