@@ -1,0 +1,38 @@
+name: test
+
+# The plugin ships without dependencies and without a build step, so CI needs
+# no install and no compile — it just runs the suites. `npm test` chains the
+# three files: pure helpers, host routes, and component rendering.
+#
+# The two diagnostic scripts (probe-graph, verify-served) are NOT run here:
+# they inspect a live `dsh web` on 127.0.0.1:3080 and are meant for local
+# troubleshooting.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No `npm ci`: package.json declares no dependencies, and the client half
+      # borrows React from the DSH host at runtime rather than installing it.
+      - name: Run test suites
+        run: npm test
+
+      - name: Verify the package can be packed
+        run: npm pack --dry-run
