@@ -473,6 +473,76 @@ await test('renders with the platform MarkdownText present', async () => {
 	assert.equal(typeof last.pathImages.resolve, 'function', 'pathImages missing')
 })
 
+await test('a local screenshot referenced from a document resolves to the asset route', async () => {
+	// This is the mechanism a README screenshot relies on. Unlike a remote
+	// badge, a committed image is served by the plugin itself, so it renders
+	// with no network access at all.
+	resetHarness(true)
+	const files = [
+		{ path: 'README.md', name: 'README.md' },
+		{ path: 'docs/screenshot.png', name: 'screenshot.png' },
+	]
+	apiResponses.set('list', { ok: true, files, root: '/ws', truncated: false, maxDepth: 14 })
+	apiResponses.set('read', { ok: true, text: '# doc\n\n![效果图](./docs/screenshot.png)\n' })
+	await mount(getView(), { sessionId: SESSION })
+
+	assert.ok(markdownTextCalls.length > 0, 'MarkdownText should have rendered')
+	const { pathImages } = markdownTextCalls[markdownTextCalls.length - 1]
+	assert.equal(typeof pathImages.resolve, 'function')
+
+	const url = pathImages.resolve('./docs/screenshot.png')
+	assert.ok(typeof url === 'string' && url.length > 0, 'expected a resolved url, got ' + String(url))
+	assert.ok(url.includes('/mdvault/asset/'), 'must go through the plugin asset route: ' + String(url))
+	assert.ok(url.includes(encodeURIComponent(SESSION)), 'must be session scoped: ' + String(url))
+	assert.ok(url.includes(encodeURIComponent('docs/screenshot.png')), 'must address the committed path: ' + String(url))
+
+	// Relative-to-the-document, not relative to the workspace root. The
+	// resolver deliberately does not check existence — it builds the URL and a
+	// missing file degrades to the platform's alt-text fallback.
+	assert.equal(pathImages.resolve('screenshot.png'),
+		'http://127.0.0.1:3080/mdvault/asset/' + encodeURIComponent(SESSION) + '/' + encodeURIComponent('screenshot.png'),
+		'a bare name in a root document means a root-level file')
+
+	// Remote images are left to the platform, which fetches them directly.
+	assert.equal(pathImages.resolve('https://img.shields.io/npm/v/x.svg'), undefined,
+		'a remote url must not be routed through the asset route')
+})
+
+await test('a bare image name resolves beside a nested document', async () => {
+	resetHarness(true)
+	const files = [
+		{ path: 'README.md', name: 'README.md' },
+		{ path: 'docs/guide.md', name: 'guide.md' },
+		{ path: 'docs/screenshot.png', name: 'screenshot.png' },
+	]
+	apiResponses.set('list', { ok: true, files, root: '/ws', truncated: false, maxDepth: 14 })
+	apiResponses.set('read', { ok: true, text: '# guide\n\n![shot](screenshot.png)\n' })
+	const View = getView()
+	const out = await mount(View, { sessionId: SESSION })
+	// Open docs/guide.md so the document's own directory is `docs`.
+	const guide = findAll(out, (n) => n.props && typeof n.props.className === 'string'
+		&& n.props.className === 'mdv-row'
+		&& Array.isArray(n.props.children)
+		&& n.props.children.some((c) => c && c.props && c.props.className === 'mdv-dirname'))[0]
+	assert.ok(guide, 'no directory row to expand')
+	guide.props.onClick()
+	await flushEffects()
+	dirty = false
+	const expanded = await mount(View, { sessionId: SESSION })
+	const row = findAll(expanded, (n) => n.props && typeof n.props.className === 'string'
+		&& n.props.className.includes('mdv-filerow')
+		&& typeof n.props.children === 'string' && n.props.children.includes('guide.md'))[0]
+	assert.ok(row, 'no tree row for guide.md')
+	row.props.onClick()
+	await flushEffects()
+	dirty = false
+	await mount(View, { sessionId: SESSION })
+
+	const { pathImages } = markdownTextCalls[markdownTextCalls.length - 1]
+	assert.ok(String(pathImages.resolve('screenshot.png')).includes(encodeURIComponent('docs/screenshot.png')),
+		'a bare name beside a nested document must resolve into that directory')
+})
+
 await test('renders the truncated badge when the host reports a capped listing', async () => {
 	resetHarness()
 	apiResponses.set('list', { ok: true, files: FILES, root: '/ws', truncated: true, maxDepth: 14 })

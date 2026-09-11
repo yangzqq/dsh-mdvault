@@ -8,6 +8,14 @@
 
 不是新开标签页跳到一个地址，而是就地打开：PDF 直接翻到指定页，图片直接显示，表格直接渲染，另一篇笔记直接跳过去。
 
+<!--
+  维护提示：这张图用绝对 raw URL，不要改成相对路径 docs/screenshot.png。
+  相对路径在 GitHub 上正常，但在 npm 的 README 页面上不显示 —— npm 不会把
+  相对图片路径重写到仓库地址，而 docs/ 又不在 package.json 的 files 白名单里
+  （故意不加，免得每次安装都多下载 600KB）。绝对 URL 两边都能显示。
+-->
+![dsh-mdvault 界面](https://raw.githubusercontent.com/yangzqq/dsh-mdvault/main/docs/screenshot.png)
+
 ```bash
 dsh plugin --profile web add dsh-mdvault
 ```
@@ -156,7 +164,7 @@ dsh plugin --profile web add /path/to/dsh-mdvault  # 从本地源码目录
 Mermaid 库有 3.4 MB，只在文档里真的出现 ```` ```mermaid ```` 代码块时才会按需加载。第一次渲染会稍慢一下。
 
 **某个文件点不开？**
-请带上工具栏右端的**构建号**（形如 `v1.2.3`）反馈，它能确认你实际运行的版本。
+请带上工具栏右端的**构建号**（形如 `v1.2.4`）反馈，它能确认你实际运行的版本。
 
 **文件树太窄或太宽？**
 拖动它与文档之间的分隔线即可调整，双击分隔线恢复默认宽度。分隔线可用键盘操作（聚焦后按 ←/→ 微调，Shift 加速，Home/End 到两端）。宽度会被记住。
