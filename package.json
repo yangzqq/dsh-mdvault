@@ -1,7 +1,7 @@
 {
   "name": "dsh-mdvault",
   "description": "Workspace document vault for the dsh web GUI: a conversation '文档' tab with an all-type file tree (Markdown/PDF/HTML/code/Excel·CSV/images), full GFM rendering via the platform MarkdownText (tables, task lists, footnotes, KaTeX math, highlighted code fences), Mermaid diagrams, Obsidian-style [[wikilinks]], PDF blob preview, image zoom/pan, native SheetJS spreadsheets, and in-page editing with find/replace. Optional dsh-better-sidebar viewer integration.",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "type": "module",
   "engines": {
     "node": ">=20"

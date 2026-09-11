@@ -601,6 +601,62 @@ await test('selecting an asset takes over the pane (no stale document)', async (
 	assert.ok(!text2.includes('正在读取'), 'the pane should not still be loading a text document')
 })
 
+await test('clicking a ROOT file while a subdirectory document is open opens the ROOT file', async () => {
+	// Regression: tree clicks went through link resolution, which resolves
+	// relative to the OPEN DOCUMENT. With a document inside sub/ open, clicking
+	// a root-level asset resolved to `sub/<name>` and 404ed. Workspaces that
+	// keep a README at the root hid this, because there the base directory is
+	// '' and both resolutions agree.
+	resetHarness(true)
+	const files = [
+		{ path: 'README.md', name: 'README.md' },
+		{ path: 'sub/notes.md', name: 'notes.md' },
+		{ path: '测试图片.jpg', name: '测试图片.jpg' },
+	]
+	apiResponses.set('list', { ok: true, files, root: '/ws', truncated: false, maxDepth: 14 })
+	apiResponses.set('read', { ok: true, text: '# from sub\n' })
+	const View = getView()
+	const props = { sessionId: SESSION }
+
+	// Open the nested document, so the "current document" base becomes `sub`.
+	const out1 = await clickRow(View, props, 'notes.md', 'sub')
+	const img = findAll(out1, (n) => n.props && typeof n.props.className === 'string'
+		&& n.props.className.includes('mdv-filerow')
+		&& typeof n.props.children === 'string' && n.props.children.includes('测试图片.jpg'))[0]
+	assert.ok(img, 'no tree row for the root image')
+
+	img.props.onClick()
+	await flushEffects()
+	dirty = false
+	const out2 = await mount(View, props)
+	const text = JSON.stringify(out2)
+	assert.ok(text.includes('测试图片.jpg'), 'the image should own the pane')
+	assert.ok(!text.includes('sub%2F') && !text.includes('sub/测试图片.jpg'),
+		'the asset url must NOT resolve into the open document\'s directory: ' + text.slice(0, 400))
+	assert.ok(text.includes(encodeURIComponent('测试图片.jpg')), 'expected the root-relative asset url')
+})
+
+await test('the tree column renders a draggable split handle', async () => {
+	resetHarness()
+	apiResponses.set('list', { ok: true, files: FILES, root: '/ws', truncated: false, maxDepth: 14 })
+	apiResponses.set('read', { ok: true, text: '# x\n' })
+	const out = await mount(getView(), { sessionId: SESSION })
+	const handle = findAll(out, (n) => n.props && typeof n.props.className === 'string'
+		&& n.props.className.includes('mdv-split'))[0]
+	assert.ok(handle, 'no split handle rendered')
+	for (const k of ['onPointerDown', 'onPointerMove', 'onPointerUp', 'onDoubleClick', 'onKeyDown']) {
+		assert.equal(typeof handle.props[k], 'function', 'handle is missing ' + k)
+	}
+	assert.equal(handle.props.role, 'separator')
+	assert.equal(handle.props.tabIndex, 0, 'the handle must be keyboard reachable')
+	assert.equal(typeof handle.props['aria-valuenow'], 'number')
+
+	// The tree column must carry the width the handle drives.
+	const side = findAll(out, (n) => n.props && n.props.className === 'mdv-side')[0]
+	assert.ok(side, 'no tree column rendered')
+	assert.equal(typeof side.props.style.width, 'number', 'the tree column has no width from the split')
+})
+
 console.log('')
 console.log(passed + ' assertions passed' + (failures.length ? ', ' + failures.length + ' FAILED' : ''))
 if (failures.length) console.log('failed: ' + failures.join(' | '))
