@@ -31,7 +31,7 @@ dsh plugin --profile web add dsh-mdvault
 - **筛选框**：输入关键字即时过滤文件路径，匹配时自动展开目录
 - **分类图标**：📝 Markdown · 📕 PDF · 📗 表格 · 🖼 图片 · 🌐 HTML · 💻 代码
 - **扫描上限**：最多 14 层目录、4000 个文件；触顶时工具栏显示 **⚠ 列表已截断**
-- 工具栏右端显示构建号 **`v1.2.0`**，用于确认浏览器跑的是哪个版本
+- 工具栏右端显示构建号 **`v1.2.1`**，用于确认浏览器跑的是哪个版本
 
 ### Markdown 预览
 
@@ -289,7 +289,7 @@ dsh plugin --profile web remove dsh-mdvault
 
 DSH 会用 `dsh-client-hmr` 热重载插件的浏览器半边，**但热重载不一定落到已经打开的页面上**。判断方法：
 
-1. 看工具栏右端的构建号（如 `v1.2.0`）。它就是**浏览器当前实际运行**的版本。
+1. 看工具栏右端的构建号（如 `v1.2.1`）。它就是**浏览器当前实际运行**的版本。
 2. 如果构建号比你刚改的版本旧 → **硬刷新页面**（`Ctrl+Shift+R` / `⌘⇧R`）。
 3. 如果宿主半边（`lib/index.js`）改过 → 必须重启 `dsh web`，刷新页面没用。
 
@@ -303,7 +303,7 @@ npm run verify:served  # 服务端发出的字节是否就是磁盘上这份，�
 ## 测试
 
 ```bash
-npm test              # 纯函数 + 宿主路由 + 组件渲染，共 132 项断言
+npm test              # 纯函数 + 宿主路由 + 组件渲染，共 134 项断言
 npm run test:helpers  # 链接改写与解析规则、frontmatter、路径、mermaid、SVG 清洗、树展开、拦截器、apply()
 npm run test:host     # 宿主路由：路径越界、Content-Type、ETag/304、表格页、深层目录扫描
 npm run test:render   # 组件渲染：真正执行 MdVaultView，捕获渲染期异常（白屏类 bug）
