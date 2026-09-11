@@ -74,13 +74,15 @@ function makeFakeFs(root) {
 }
 
 const routes = []
+/**
+ * Services `ctx.get` answers. Mutable so a single test can add `sessions` or
+ * `sessionPersistence` without disturbing the others.
+ */
+const services = { sandboxPolicy: { workspaceRoot: ROOT } }
 const ctx = {
 	fs: makeFakeFs(ROOT),
 	effect(fn) { return fn() },
-	get(name) {
-		if (name === 'sandboxPolicy') return { workspaceRoot: ROOT }
-		return undefined
-	},
+	get(name) { return services[name] },
 	webServer: {
 		register(route) {
 			routes.push(route)
@@ -218,6 +220,140 @@ await test('reports the truncation flag and the depth limit', async () => {
 	assert.equal(typeof out.maxDepth, 'number')
 	assert.ok(out.maxDepth >= 10, 'the depth limit should allow real document trees')
 })
+
+console.log('session working directory resolution')
+
+/** A second workspace, to prove the session cwd beats the deployment root. */
+const SESSION_WS = await mkdtemp(join(tmpdir(), 'mdvault-session-'))
+await writeFile(join(SESSION_WS, 'session-note.md'), '# from the session dir\n', 'utf8')
+
+/** Install services for one test and remove them afterwards. */
+function withServices(next, fn) {
+	return async () => {
+		Object.assign(services, next)
+		try {
+			await fn()
+		} finally {
+			for (const key of Object.keys(next)) delete services[key]
+		}
+	}
+}
+
+/** A `sessions` stub holding only the ids it is given. */
+function fakeSessions(map) {
+	return { get: (id) => map[id] }
+}
+
+/** A `sessionPersistence` stub over a header map, counting stat calls. */
+function fakePersistence(map) {
+	const calls = []
+	return {
+		calls,
+		async stat(id) {
+			calls.push(id)
+			const header = map[id]
+			if (header === undefined) return undefined
+			return { header, revision: 'r1' }
+		},
+	}
+}
+
+await test('a live session uses its in-memory cwd', await withServices({
+	sessions: fakeSessions({ 'sess-live-1': { header: { cwd: SESSION_WS } } }),
+}, async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-live-1' }) })
+	const out = json(res)
+	assert.equal(out.root, SESSION_WS)
+	assert.equal(out.resolved, true)
+	assert.equal(out.rootSource, 'session')
+	assert.ok(out.files.some((f) => f.path === 'session-note.md'), 'should list the session directory')
+}))
+
+await test('a HISTORICAL session uses its persisted cwd, not the workspace root', await withServices({
+	// Not in `sessions` at all — this is the reopened-conversation case that
+	// used to fall through and browse the deployment root instead.
+	sessions: fakeSessions({}),
+	sessionPersistence: fakePersistence({ 'sess-hist-1': { cwd: SESSION_WS } }),
+}, async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-hist-1' }) })
+	const out = json(res)
+	assert.equal(out.root, SESSION_WS, 'must use the persisted cwd, not sandboxPolicy.workspaceRoot')
+	assert.notEqual(out.root, ROOT)
+	assert.equal(out.resolved, true)
+	assert.equal(out.rootSource, 'session')
+}))
+
+await test('the live header wins over the persisted one', await withServices({
+	sessions: fakeSessions({ 'sess-both-1': { header: { cwd: SESSION_WS } } }),
+	sessionPersistence: fakePersistence({ 'sess-both-1': { cwd: '/somewhere/else' } }),
+}, async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-both-1' }) })
+	assert.equal(json(res).root, SESSION_WS)
+}))
+
+await test('an unresolvable session reports resolved:false instead of pretending', await withServices({
+	sessions: fakeSessions({}),
+	sessionPersistence: fakePersistence({}),
+}, async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-unknown-1' }) })
+	const out = json(res)
+	assert.equal(out.root, ROOT, 'falls back to the deployment root')
+	assert.equal(out.resolved, false, 'must admit the root is not the session directory')
+	assert.equal(out.rootSource, 'workspaceRoot')
+}))
+
+await test('no sessionId at all reports resolved:false', async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({}) })
+	const out = json(res)
+	assert.equal(out.resolved, false)
+	assert.equal(out.root, ROOT)
+})
+
+await test('a failing persistence lookup degrades instead of throwing', await withServices({
+	sessions: fakeSessions({}),
+	sessionPersistence: { async stat() { throw new Error('corrupt session') } },
+}, async () => {
+	const res = await call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-corrupt-1' }) })
+	const out = json(res)
+	assert.equal(out.ok, true, 'the listing still succeeds')
+	assert.equal(out.resolved, false)
+}))
+
+await test('a resolved cwd is cached; misses are retried', await withServices({}, async () => {
+	const persistence = fakePersistence({ 'sess-cache-1': { cwd: SESSION_WS } })
+	services.sessions = fakeSessions({})
+	services.sessionPersistence = persistence
+
+	const ask = () => call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-cache-1' }) })
+	assert.equal(json(await ask()).root, SESSION_WS)
+	assert.equal(json(await ask()).root, SESSION_WS)
+	// A session cwd lives on an immutable header, so one read is enough.
+	assert.equal(persistence.calls.length, 1, 'expected the header to be read once, got ' + persistence.calls.length)
+
+	// A miss must NOT be cached: the session may materialize later.
+	const miss = () => call(api, { method: 'POST', url: '/mdvault/api/list', body: JSON.stringify({ sessionId: 'sess-late-1' }) })
+	await miss()
+	await miss()
+	assert.equal(persistence.calls.filter((id) => id === 'sess-late-1').length, 2, 'a miss should be retried')
+}))
+
+await test('the persisted cwd also drives read, asset and sheet resolution', await withServices({
+	sessions: fakeSessions({}),
+	sessionPersistence: fakePersistence({ 'sess-routes-1': { cwd: SESSION_WS } }),
+}, async () => {
+	const read = await call(api, {
+		method: 'POST', url: '/mdvault/api/read',
+		body: JSON.stringify({ sessionId: 'sess-routes-1', path: 'session-note.md' }),
+	})
+	assert.equal(json(read).ok, true, 'read must resolve against the session cwd')
+
+	const asset = await call(routeFor('/mdvault/asset'), {
+		method: 'GET', url: '/mdvault/asset/sess-routes-1/session-note.md',
+	})
+	assert.equal(asset.statusCode, 200, 'the asset route must resolve against the session cwd too')
+}))
+
+await rm(SESSION_WS, { recursive: true, force: true })
 
 console.log('/mdvault/api read + write')
 
