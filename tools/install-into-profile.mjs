@@ -238,7 +238,26 @@ if (mode === 'link') {
 	if (state.kind === 'dir') {
 		// Move rather than delete: reversible if the junction turns out wrong.
 		const aside = linkTarget + '.replaced-' + stamp
-		await rename(linkTarget, aside)
+		try {
+			await rename(linkTarget, aside)
+		} catch (err) {
+			// Windows refuses to rename a directory that any process is using.
+			// In practice the holder is the running `dsh web`, which has this
+			// plugin loaded — so the swap needs DSH stopped.
+			if (err && ['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) {
+				console.error('')
+				console.error('cannot replace ' + linkTarget + ' — it is in use (' + err.code + ').')
+				console.error('')
+				console.error('A running `dsh web` holds this directory (it is the plugin it loaded), and')
+				console.error('Windows will not rename a directory a process is using. Nothing is broken:')
+				console.error('the profile is already switched to `link:`; only the junction is missing.')
+				console.error('')
+				console.error('To finish: stop `dsh web`, run this command again, then start `dsh web`.')
+				console.error('On the next start, DSH\'s own `pnpm install` may create the junction first.')
+				process.exit(3)
+			}
+			throw err
+		}
 		linkNote = '  moved old directory aside -> ' + aside + '\n'
 	} else if (state.kind === 'link') {
 		await rm(linkTarget, { force: true })
