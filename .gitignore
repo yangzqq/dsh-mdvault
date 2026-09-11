@@ -7,3 +7,7 @@ node_modules/
 # writable.
 *.tgz
 .npm-cache/
+
+# Never commit a token file. Publishing needs a credential, and an .npmrc in
+# the project root is the most common place for one to leak into a repository.
+.npmrc
