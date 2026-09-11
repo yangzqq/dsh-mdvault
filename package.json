@@ -17,9 +17,10 @@
     "test": "node test/helpers.test.mjs && node test/host.test.mjs && node test/render.test.mjs",
     "test:helpers": "node test/helpers.test.mjs",
     "test:host": "node test/host.test.mjs",
+    "test:render": "node test/render.test.mjs",
     "probe:graph": "node test/probe-graph.mjs",
     "verify:served": "node test/verify-served.mjs",
-    "test:render": "node test/render.test.mjs"
+    "prepublishOnly": "npm test"
   },
   "dsh": {
     "engines": {
@@ -50,12 +51,28 @@
     "dsh",
     "dsh-plugin",
     "dsh-web",
+    "deepseek-harness",
     "markdown",
     "obsidian",
     "wikilinks",
     "mermaid",
     "pdf",
-    "document-viewer"
+    "spreadsheet",
+    "document-viewer",
+    "file-preview"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangzqq/dsh-mdvault.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yangzqq/dsh-mdvault/issues"
+  },
+  "homepage": "https://github.com/yangzqq/dsh-mdvault#readme",
+  "author": "yangzqq",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "license": "MIT"
 }

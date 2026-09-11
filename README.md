@@ -1,6 +1,14 @@
 # dsh-mdvault
 
+[![npm](https://img.shields.io/npm/v/dsh-mdvault.svg)](https://www.npmjs.com/package/dsh-mdvault)
+[![license](https://img.shields.io/npm/l/dsh-mdvault.svg)](./LICENSE)
+[![test](https://github.com/yangzqq/dsh-mdvault/actions/workflows/test.yml/badge.svg)](https://github.com/yangzqq/dsh-mdvault/actions/workflows/test.yml)
+
 DSH Web UI 的工作区文档库插件：在会话区新增一个 **📄 文档** 标签页，把当前工作区变成一个可浏览、可跳转、可编辑的"轻量 Obsidian"。
+
+```bash
+dsh plugin --profile web add dsh-mdvault
+```
 
 > **v1.1.0 起**：文件预览能力对齐 `dsh-better-sidebar`（Markdown 全语法 / Mermaid / PDF / 图片 / HTML / 代码），并且全部在主界面窗口内打开。两个插件可以共存。
 >
@@ -103,9 +111,33 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 
 ## 环境要求
 
-- DeepSeek Harness（`@deepseek-ai/dsh`）web 部署
-- **无构建步骤**：`lib/` 是可直接运行的纯 JavaScript
-- **无 npm 依赖**：SheetJS 与 Mermaid 已打包在 `dist/`，不需要外网
+- DeepSeek Harness（`@deepseek-ai/dsh`）web 部署，`dsh >= 0.1.5-rc.1`
+- **无构建步骤**：`lib/` 是可直接运行的纯 JavaScript（不需要 TypeScript、不需要打包器）
+- **无依赖**：不装任何 npm 包；SheetJS 与 Mermaid 已内置在 `dist/`，不需要外网
+
+## 安装
+
+已发布到 npm，一条命令：
+
+```bash
+dsh plugin --profile web add dsh-mdvault
+```
+
+这会做两件事：`pnpm add dsh-mdvault`，然后把 `dsh-mdvault` 加进 profile 的
+`dsh.profile.bundles`（CLI 会按"该依赖是否声明 `dsh.bundle`"自动reconcile）。
+随后重启 `dsh web`，会话区顶部出现 **📄 文档** 标签页。
+
+> **不需要**手工往 `cordis.patch.yml` 写 `- insert:` 行 —— 包内自带的
+> `cordis.patch.yml` 会作为 bundle 层自动套用。手工再加一行会**重复挂载**同一个 id。
+
+也可以从源码目录装（不经过 npm registry）：
+
+```bash
+dsh plugin --profile web add /path/to/dsh-mdvault     # 本地目录
+dsh plugin --profile web add dsh-mdvault@1.2.1        # 指定版本
+```
+
+安装后在「设置 → 插件」里能看到它，版本号、启用开关都在那。
 
 ## 维护：源码在哪里
 
@@ -118,7 +150,7 @@ Markdown 渲染直接复用 DSH 平台自身的 `MarkdownText`（`@deepseek-ai/d
 
 ### 为什么不在 node_modules 里维护
 
-profile 的依赖是 `link:`，所以 `node_modules/dsh-mdvault` 只是**指向上面那个目录的链接**，
+开发机的 profile 依赖写成 `link:`，所以 `node_modules/dsh-mdvault` 只是**指向源码目录的链接**，
 不是一份拷贝。这样做的直接原因是一个真实踩过的坑：
 
 > 早先依赖写成 `file:...tgz` 时，`dsh web` 启动过程中的 `pnpm install` 会把 tgz
@@ -126,6 +158,15 @@ profile 的依赖是 `link:`，所以 `node_modules/dsh-mdvault` 只是**指向�
 > 文件全部删掉。源码（含 git 历史）就是这样丢过一次的，靠事前的备份才救回来。
 
 `link:` 之后不存在"解包覆盖"这一步，源码目录永远是你的工作树。
+
+> **开发机 vs 用户机器**，两条不同的路：
+>
+> | | 依赖写法 | 改动源码后 |
+> | --- | --- | --- |
+> | **你的开发机** | `link:C:/.../dsh-mdvault` | 重启 `dsh web` 即生效 |
+> | **用户机器** | `^1.2.1`（npm） | 不生效 —— 要发新版本 |
+>
+> 别在开发机上把它改成 npm 版本号，否则你的本地改动就不再被加载了。
 
 ### 日常流程
 
@@ -182,43 +223,43 @@ for (const name of Object.keys(manifest.dependencies).sort())   // → 一行
 读版本号和 `cordis.patch.yml`。所以只靠 `cordis.patch.yml` 里一行手写 insert 挂载的插件，
 目录虽然在 `node_modules` 里，但**管理器看不见它**。
 
-## 发布到其他机器（tgz 方式）
-
-本机用 `link:` 开发；要给别人装、或要一份冻结的产物时，再打包：
+## 发布新版本
 
 ```bash
 cd ~/.agents/dsh-mdvault
-npm pack                       # 产出 dsh-mdvault-<version>.tgz（约 1.3 MB）
-# 若 npm 默认缓存不可写：npm pack --cache ./.npm-cache
+npm version patch        # 或 minor / major，会自动改 package.json 并打 git tag
+npm publish              # prepublishOnly 会先跑 134 项测试，失败则拒绝发布
+git push --follow-tags
 ```
 
-产物含 `lib/`、`dist/`（SheetJS + Mermaid）、`test/`、`cordis.patch.yml`、`README.md`、`LICENSE`。
-**不含 `.git`** —— 所以它只是发布物，不能当源码目录用。
+版本号在**两处**，必须一致（`test/verify-served.mjs` 会校验）：
 
-在目标机器上：
+- `package.json` 的 `version`
+- `lib/client.js` 里的 `MDVAULT_VERSION` —— 它显示在工具栏右端，用来判断浏览器实际跑的是哪一版
+
+首次发布前需要登录（只需一次）：
 
 ```bash
-dsh plugin --profile web add file:C:/path/to/dsh-mdvault-1.2.1.tgz
+npm login
+npm whoami               # 确认身份
 ```
 
-或手工登记依赖与 bundles 条目后 `pnpm install`；**同样记得删掉手写 insert 行**。
+包名 `dsh-mdvault` 在 npm 上未被占用。`publishConfig.access` 已设为 `public`。
 
-> 用 `file:` + tgz 时，改动源码后必须**重新打包并重装**才会生效。本机开发请用 `link:`。
-
-### 为什么 tgz 里带 `test/`
-
-`files` 里包含 `test/`，所以装完仍可自检：
-
-```bash
-cd ~/.dsh/profiles/web/node_modules/dsh-mdvault && npm test   # 134 项断言
-```
+> **不经过 npm 的备选方式**：`npm pack` 产出 tgz，别人用
+> `dsh plugin --profile web add file:/path/to/dsh-mdvault-1.2.1.tgz` 安装。
+> tgz 是构建产物，已被 `.gitignore` 忽略，不要提交。
 
 ## 卸载
 
-- **link: 方式**：`node tools/install-into-profile.mjs` 只负责接入；卸载就从 profile
-  `package.json` 移除 `dsh-mdvault` 依赖与 bundles 条目，并删掉 `node_modules/dsh-mdvault`
-  这个链接（**不要删 `~/.agents/dsh-mdvault`**，那是你的源码）。
-- **tgz 方式**：`dsh plugin --profile web remove dsh-mdvault`，再 `pnpm install`。
+```bash
+dsh plugin --profile web remove dsh-mdvault
+```
+
+再重启 `dsh web`。（CLI 会同时把 `dsh.profile.bundles` 里的条目一并移除。）
+
+开发机上如果你用的是 `link:`，卸载后 `node_modules/dsh-mdvault` 那个链接会消失，
+但**源码目录 `~/.agents/dsh-mdvault` 不受影响** —— 那是你的仓库，别删。
 
 ## 插件注册的 HTTP 路由
 
